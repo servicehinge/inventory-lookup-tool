@@ -31,6 +31,12 @@ def _boot_secrets():
             os.environ["GOOGLE_SA_KEY"] = _sa.name
     except Exception:
         pass
+    # Hugging Face / 任何只給環境變數的平台：service account 用整段 JSON 字串注入
+    if not os.environ.get("GOOGLE_SA_KEY") and os.environ.get("GCP_SERVICE_ACCOUNT_JSON"):
+        _sa = tempfile.NamedTemporaryFile("w", suffix=".json", delete=False)
+        _sa.write(os.environ["GCP_SERVICE_ACCOUNT_JSON"])
+        _sa.flush()
+        os.environ["GOOGLE_SA_KEY"] = _sa.name
 
 
 _boot_secrets()
