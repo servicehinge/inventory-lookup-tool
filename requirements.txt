@@ -1,0 +1,4 @@
+streamlit>=1.36
+gspread>=6.0
+google-auth>=2.30
+certifi>=2024.0
