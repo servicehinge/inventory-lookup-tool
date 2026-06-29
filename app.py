@@ -55,6 +55,11 @@ def get_dbs():
 
 
 @st.cache_resource(ttl=1800)
+def get_tw_sw():
+    return ic.TWSwingClear()
+
+
+@st.cache_resource(ttl=1800)
 def get_catalog(family):
     return ic.HubSpotCatalog(family)
 
@@ -121,14 +126,14 @@ def render_single(r, internal):
                    ("可出組數 / Sets" if internal else "Sets"): next(x["qty"] for x in us["set_stock"] if x["warehouse"] == w)}
                   for w in whs])
     else:
-        st.write("—  (none in stock)" if not internal else "—  目前無現成成品")
+        st.write("—  (none in stock)" if not internal else "—  目前無現成成品 / none ready to ship")
     st.write(("美國合計 / US total: **{}** sets".format(us["set_total"])) if internal
              else "US total: **{}** sets".format(us["set_total"]))
 
     ip = r["tw"]["assemblable_sets"]
     if internal:
         low = r["tw"]["low_stock"]
-        st.markdown("**製程中 / In process**  ·  可再組 **{}** 組（交期約 1–2 週）".format(ip))
+        st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets（交期約 / lead time ~1–2 weeks）".format(ip))
         st.table([{"零件/Part": c["code"], "料號/ERP": c["erp"] or "-", "每組需/Need": c["need"],
                    "庫存/Stock": c["qty"], "安全/Safety": c["safety"],
                    "⚠": "低 / Low" if c["below_safety"] else ""}
@@ -140,6 +145,47 @@ def render_single(r, internal):
                       for d in r["decomposition"]])
     else:
         st.markdown("**In process**  ·  {} more sets available, lead time approx. **1–2 weeks**.".format(ip))
+
+    render_alts(r, internal)
+
+
+def render_alts(r, internal):
+    """缺色提示：列出其他「有貨」顏色，讓業務能提替代方案。只列出有庫存的顏色；中英並列。"""
+    us_alt = r["us"].get("alt_colors") or []
+    tw_alt = r["tw"].get("alt_colors") or []
+    if not us_alt and not tw_alt:
+        return
+    out_of_stock = r["us"]["set_total"] == 0 and r["tw"]["assemblable_sets"] == 0
+    n = len(set([a["color"] for a in us_alt] + [a["color"] for a in tw_alt]))
+
+    if internal:
+        if out_of_stock:
+            st.warning(f"此顏色目前無貨；另有 {n} 種顏色有貨可向客戶提案 / "
+                       f"This finish is out of stock — {n} other finish(es) available to offer:")
+        else:
+            st.markdown(f"**其他顏色（{n} 種）/ Other finishes available ({n})**")
+        if us_alt:
+            st.markdown("　**美國現貨 / Ready to ship (US):**")
+            st.table([{"顏色 / Color": f"{a['color_name']} ({a['color']})",
+                       "可出組數 / Sets": a["total"],
+                       "倉庫 / Warehouse": ", ".join(f"{WH_NAME.get(w, w)}: {q}"
+                                                     for w, q in a["by_wh"].items())}
+                      for a in us_alt])
+        if tw_alt:
+            st.markdown("　**製程中 / In process (~1–2 weeks):**")
+            st.table([{"顏色 / Color": f"{a['color_name']} ({a['color']})",
+                       "可再生產組數 / Sets": a["sets"]} for a in tw_alt])
+    else:
+        if out_of_stock:
+            st.warning(f"This finish is currently unavailable. {n} other finish(es) you can offer:")
+        else:
+            st.markdown(f"**Other finishes available ({n})**")
+        if us_alt:
+            st.markdown("**Ready to ship:**")
+            st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["total"]} for a in us_alt])
+        if tw_alt:
+            st.markdown("**In process (~1–2 weeks):**")
+            st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["sets"]} for a in tw_alt])
 
 
 # ---------------- app ----------------
@@ -196,22 +242,23 @@ def is_base_only(m):
 
 
 if go and model.strip():
-    m = model.strip().upper()
+    m = ic.normalize_model(model)  # swing clear 各種寫法（K51L-SWRH / SWLH / 空白）收斂成 K51LSWRH
     show_colors = any_color or is_base_only(m)
     base = "-".join(m.split("-")[:3]) if show_colors else m
     try:
         us_db, tw_db = get_dbs()
+        tw_sw_db = get_tw_sw() if ic.is_swing_clear(m) else None
         cat = get_catalog(ic.family_of(m))
         with st.spinner("Looking up…"):
             if show_colors:
-                data = ic.lookup_all_colors(base, catalog=cat, us_db=us_db, tw_db=tw_db)
+                data = ic.lookup_all_colors(base, catalog=cat, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
                 if not data["found"]:
                     st.error(f"No variants found for {base}")
                 else:
                     st.markdown(f"### {base} — " + ("任何顏色 / any color" if internal else "all finishes"))
                     render_grid(data, internal)
             else:
-                r = ic.lookup(m, catalog=cat, us_db=us_db, tw_db=tw_db)
+                r = ic.lookup(m, catalog=cat, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
                 if not r["found"]:
                     st.error(("找不到型號 / " if internal else "") + f"Model not found: {m}")
                 else:
