@@ -1,6 +1,5 @@
-streamlit>=1.36
+fastapi>=0.110
+uvicorn>=0.29
 gspread>=6.0
 google-auth>=2.30
 certifi>=2024.0
-fastapi>=0.110
-uvicorn>=0.29
