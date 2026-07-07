@@ -114,9 +114,34 @@ def render_grid(data, internal):
                                                   for w in c["stock"]) for c in loose))
 
 
+def render_headline(r, internal):
+    """業務最在意的兩個數字做大：美國現貨可出 / 台灣可再組。放在每筆結果最上面。"""
+    us_total = r["us"]["set_total"]
+    tw_sets = r["tw"]["assemblable_sets"]
+    c1, c2 = st.columns(2)
+    if internal:
+        c1.metric("美國現貨可出 / Ready now", f"{us_total} 組")
+        c2.metric("台灣可再組 / In process (~1–2 wk)", f"{tw_sets} 組")
+    else:
+        c1.metric("Ready to ship", f"{us_total} sets")
+        c2.metric("In process (~1–2 wk)", f"{tw_sets} sets")
+    # 一行結論（醒目）：有現貨→綠、僅可生產→黃、皆無→紅
+    if us_total > 0:
+        st.success((f"**現貨可出 {us_total} 組，可立即出貨。**" if internal
+                    else f"**{us_total} sets ready to ship now.**")
+                   + (f"（另可再生產 {tw_sets} 組）" if internal and tw_sets else ""))
+    elif tw_sets > 0:
+        st.warning(f"**美國無現貨；台灣可再生產 {tw_sets} 組，交期約 1–2 週。**" if internal
+                   else f"**Made to order — {tw_sets} sets, lead time approx. 1–2 weeks.**")
+    else:
+        st.error("**目前美國無現貨、台灣也無法組裝。**" if internal
+                 else "**Currently unavailable.**")
+
+
 def render_single(r, internal):
     s = r["set"]
     st.markdown(f"**{s.get('name', r['model'])}**" + (f"  ·  SKU `{s.get('sku','-')}`" if internal else ""))
+    render_headline(r, internal)
     us = r["us"]
     whs = order_whs([x["warehouse"] for x in us["set_stock"] if x["qty"] > 0])
     title = "美國各倉 / United States" if internal else "United States — ready to ship"
@@ -205,6 +230,50 @@ def render_alts(r, internal):
             st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["sets"]} for a in tw_alt])
 
 
+def _batch_status(us_total, tw_sets, internal):
+    if us_total > 0:
+        return f"現貨 {us_total} 組，可立即出" if internal else f"{us_total} ready to ship"
+    if tw_sets > 0:
+        return f"需生產 {tw_sets} 組（約 1–2 週）" if internal else f"make-to-order {tw_sets} (1–2 wk)"
+    return "無貨" if internal else "unavailable"
+
+
+def render_batch(results, internal):
+    """一次多個型號：頂端 bold 摘要表（業務掃一眼），下面每型號可展開看完整明細。"""
+    st.markdown((f"### 查詢結果（{len(results)} 個型號）" if internal else f"### Results ({len(results)})"))
+    # ── 摘要表（markdown → 數字可加粗）──
+    if internal:
+        head = ["| 型號 / Model | 美國現貨 / Ready | 台灣可再組 / In process | 狀態 / Status |",
+                "|:--|--:|--:|:--|"]
+    else:
+        head = ["| Model | Ready to ship | In process | Status |",
+                "|:--|--:|--:|:--|"]
+    for m, r in results:
+        if not r.get("found"):
+            head.append(f"| `{m}` | — | — | {'查無此型號' if internal else 'not found'} |")
+            continue
+        us_total = r["us"]["set_total"]
+        tw_sets = r["tw"]["assemblable_sets"]
+        head.append(f"| `{m}` | **{us_total}** | **{tw_sets}** | {_batch_status(us_total, tw_sets, internal)} |")
+    st.markdown("\n".join(head))
+    st.caption(("美國現貨 = 馬上可出的成品組數；台灣可再組 = 半成品可再生產，交期約 1–2 週。"
+                if internal else
+                "Ready to ship = finished sets available now. In process = additional sets, lead time ~1–2 weeks."))
+    # ── 各型號明細（展開）──
+    st.markdown("---")
+    for m, r in results:
+        if not r.get("found"):
+            with st.expander(f"{m} — {'查無 / not found' if internal else 'not found'}"):
+                st.write(r.get("error") or ("找不到型號 / Model not found"))
+            continue
+        us_total = r["us"]["set_total"]
+        tw_sets = r["tw"]["assemblable_sets"]
+        title = (f"{m}　·　美國 {us_total} 組／台灣可再組 {tw_sets} 組" if internal
+                 else f"{m} — ready {us_total} / in process {tw_sets}")
+        with st.expander(title):
+            render_single(r, internal)
+
+
 # ---------------- app ----------------
 st.set_page_config(page_title="Waterson Inventory", layout="centered")
 
@@ -282,3 +351,35 @@ if go and model.strip():
                     render_single(r, internal)
     except Exception as e:
         st.error(f"Error: {type(e).__name__}: {e}")
+
+
+# ---------------- 批次查詢：貼上一整段文字，一次查多個型號 ----------------
+st.divider()
+st.markdown("**批次查詢 / Batch lookup**" if internal else "**Batch lookup**")
+st.caption(("貼上訂單或報價明細（整段即可），自動抓出型號一次查最多 10 個。"
+            if internal else
+            "Paste order or quote lines — models are detected automatically (up to 10)."))
+blob = st.text_area("貼上明細 / Paste here" if internal else "Paste here", height=150,
+                    placeholder="K51M-450-A3-US19 ...\nK51M-400-B3-US32D ...\nK51P-500-A2-US19 ...")
+go_batch = st.button("查詢全部 / Look up all" if internal else "Look up all", type="primary")
+
+if go_batch and blob.strip():
+    models = ic.extract_models(blob)
+    if not models:
+        st.error("沒有抓到任何型號 / No models detected（型號需含連字號，如 K51M-400-A3-US32D）"
+                 if internal else "No models detected.")
+    else:
+        try:
+            us_db, tw_db = get_dbs()
+            results = []
+            with st.spinner(f"查詢 {len(models)} 個型號… / Looking up {len(models)}…"):
+                for m in models:
+                    try:
+                        tw_sw_db = get_tw_sw() if ic.is_swing_clear(m) else None
+                        cat = get_catalog(ic.family_of(m))
+                        results.append((m, ic.lookup(m, catalog=cat, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)))
+                    except Exception as e:
+                        results.append((m, {"found": False, "error": f"{type(e).__name__}: {e}"}))
+            render_batch(results, internal)
+        except Exception as e:
+            st.error(f"Error: {type(e).__name__}: {e}")

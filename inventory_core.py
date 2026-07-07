@@ -64,6 +64,32 @@ def finish_color(model):
     return m.group(1) if m else ""
 
 
+# 從貼上的訂單/報價明細抽型號（每行常同時有連字號型號＋無連字號 SKU；抓連字號那種較穩）
+_MODEL_TOKEN_RE = re.compile(
+    r'K51[A-Za-z]{1,3}-\d{3}[A-Za-z]?-[A-Za-z]\d[A-Za-z]?-(?:US\d{1,2}[A-Za-z]?|\d{2,3}[A-Za-z]?)', re.I)
+
+
+def _fix_finish(model):
+    """裸色碼補 US 前綴（32D→US32D）；純數字色（695/304 之類）保留不動。"""
+    parts = model.split("-")
+    if parts and re.match(r'^\d{2}D$', parts[-1], re.I):
+        parts[-1] = "US" + parts[-1].upper()
+    return "-".join(parts)
+
+
+def extract_models(text, limit=10):
+    """一段貼上的文字 → 去重型號清單（保序，最多 limit 個）。找不到回空。"""
+    seen, out = set(), []
+    for tok in _MODEL_TOKEN_RE.findall(text or ""):
+        nm = normalize_model(_fix_finish(tok))
+        if nm not in seen:
+            seen.add(nm)
+            out.append(nm)
+        if len(out) >= limit:
+            break
+    return out
+
+
 def family_of(model):
     """型號 → 系列前綴（抓前兩段）。K51M-400-A3-US32D → K51M-400；K51LSWRH-450-A3-US32D → K51LSWRH-450。"""
     parts = normalize_model(model).split("-")
