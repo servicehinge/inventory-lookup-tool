@@ -70,6 +70,31 @@ def family_of(model):
     return "-".join(parts[:2]) if len(parts) >= 2 else normalize_model(model)
 
 
+# ---------- specification（第三層 BOM）：1CA 單片 → 2CA 半成品 ----------
+# 部分系列（如 K51P）的單片 1CA 其實是「組合件」，台灣工廠不備 1CA 成品、只備底下的
+# 2CA 半成品。單片 product 的 specification 欄位記錄拆法，例：
+#   K51P-500-SA-黑色 6"/5"-304
+#   2CADP50013124B | 背板黑色x2
+#   2CADP50600G0B | K51P ( SA) 黑色 半成品x1
+# 只取「2CA料號 | 描述xN」行；跳過標題行與「支撐柱12pcs」這類組裝備註。無此格式者回空 → 行為同舊版。
+_SUB_LINE_RE = re.compile(r'^\s*(2CA\S+)\s*\|\s*(.*?)\s*$')
+_SUB_QTY_RE = re.compile(r'[xX](\d+)\s*$')
+
+
+def parse_sub_parts(spec):
+    """specification 文字 → [{erp, desc, qty}]（qty 未標 xN 時預設 1）。"""
+    out = []
+    for line in (spec or "").splitlines():
+        m = _SUB_LINE_RE.match(line)
+        if not m:
+            continue
+        erp, desc = m.group(1).strip(), m.group(2).strip()
+        qm = _SUB_QTY_RE.search(desc)
+        qty = int(qm.group(1)) if qm else 1
+        out.append({"erp": erp, "desc": _SUB_QTY_RE.sub("", desc).strip(), "qty": qty})
+    return out
+
+
 # ---------- HubSpot：整個系列一次載入 ----------
 class HubSpotCatalog:
     """一次抓 family*（如 K51M-400*）所有 product 進記憶體。之後拆解/找料號全在本機。"""
@@ -95,7 +120,8 @@ class HubSpotCatalog:
         while True:
             body = {"filterGroups": [{"filters": [
                 {"propertyName": "name", "operator": "CONTAINS_TOKEN", "value": family + "*"}]}],
-                "properties": ["name", "hs_sku", "wh_erp", "wh_configuration"], "limit": 100}
+                "properties": ["name", "hs_sku", "wh_erp", "wh_configuration", "specification"],
+                "limit": 100}
             if after:
                 body["after"] = after
             req = urllib.request.Request(
@@ -135,7 +161,8 @@ class HubSpotCatalog:
         out = {"found": True, "set": {"name": set_name, "sku": p.get("hs_sku")}, "components": [], "note": ""}
         if not config or "." not in config:
             out["components"] = [{"code": config or set_name, "count": 1, "model": set_name,
-                                  "sku": p.get("hs_sku"), "erp": p.get("wh_erp")}]
+                                  "sku": p.get("hs_sku"), "erp": p.get("wh_erp"),
+                                  "sub_parts": parse_sub_parts(p.get("specification"))}]
             return out
         counts = Counter(c.strip() for c in config.split(".") if c.strip())
         # 用正規化型號定位功能碼（swing clear 多一段 SWRH，正規化後黏成單 token → parts[2] 仍是功能碼）
@@ -147,7 +174,8 @@ class HubSpotCatalog:
             cp = self._find(comp_model)
             out["components"].append({"code": code, "count": cnt, "model": comp_model,
                                       "sku": cp.get("hs_sku") if cp else None,
-                                      "erp": cp.get("wh_erp") if cp else None})
+                                      "erp": cp.get("wh_erp") if cp else None,
+                                      "sub_parts": parse_sub_parts(cp.get("specification") if cp else None)})
         return out
 
     def list_variants(self, base, colors_only=True):
@@ -337,7 +365,8 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
 
     # 台灣（非 swing clear）：用 HubSpot ERP 料號比對工廠表，算可組裝組數
     tw_db = tw_db or TWInventory()
-    tw_comps, sets_possible, low = [], None, []
+    # ── 第一層：1CA 成品單片直接配對（有現成 1CA 就先湊套，夠了根本不碰 2CA）──
+    tw_comps, sets_1ca, low = [], None, []
     for c in bom["components"]:
         rec = tw_db.get(c["erp"]) if c["erp"] else None
         qty = rec["qty"] if rec else 0
@@ -347,11 +376,43 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
                          "qty": qty, "safety": safety, "need": need,
                          "below_safety": bool(rec) and qty < safety})
         cap = qty // need if need else 0
-        sets_possible = cap if sets_possible is None else min(sets_possible, cap)
+        sets_1ca = cap if sets_1ca is None else min(sets_1ca, cap)
         if rec and qty < safety:
             low.append(c["code"])
-    bottleneck = min(tw_comps, key=lambda x: x["qty"] // x["need"] if x["need"] else 0)["code"] if tw_comps else None
-    result["tw"] = {"components": tw_comps, "assemblable_sets": sets_possible or 0,
+    sets_1ca = sets_1ca or 0
+
+    # ── 第二層：1CA 不足時，用 2CA 半成品「補組」。共用件（如背板 SA/SA1 都用）以整套需求
+    #    彙總扣料，避免各單片獨立計算重複計背板而超賣。一整套的 2CA 需求 = Σ(單片用量×該片在套組數量)。──
+    set_demand, sub_desc = {}, {}
+    for c in bom["components"]:
+        for sp in c.get("sub_parts", []):
+            set_demand[sp["erp"]] = set_demand.get(sp["erp"], 0) + sp["qty"] * c["count"]
+            sub_desc.setdefault(sp["erp"], sp["desc"])
+    sub_parts, sets_from_sub, sub_bottleneck = [], None, None
+    for erp, per_set in set_demand.items():
+        rec = tw_db.get(erp)
+        qty = rec["qty"] if rec else 0
+        safety = rec["safety"] if rec else 0
+        below = bool(rec) and qty < safety
+        cap = qty // per_set if per_set else 0
+        if sets_from_sub is None or cap < sets_from_sub:
+            sets_from_sub, sub_bottleneck = cap, erp
+        sub_parts.append({"erp": erp, "desc": sub_desc.get(erp, ""), "name": rec["name"] if rec else None,
+                          "qty": qty, "safety": safety, "per_set": per_set,
+                          "below_safety": below, "in_table": bool(rec)})
+        if below:
+            low.append(f"半成品·{sub_desc.get(erp, erp)}")
+    sets_from_sub = sets_from_sub or 0
+
+    total_sets = sets_1ca + sets_from_sub
+    # bottleneck：能靠 1CA 配套時報最緊的單片；否則（全靠 2CA）報最緊的半成品
+    if sets_1ca > 0 or not sub_parts:
+        bottleneck = (min(tw_comps, key=lambda x: x["qty"] // x["need"] if x["need"] else 0)["code"]
+                      if tw_comps else None)
+    else:
+        bottleneck = sub_bottleneck
+    result["tw"] = {"components": tw_comps, "assemblable_sets": total_sets,
+                    "sets_1ca": sets_1ca, "sets_from_sub": sets_from_sub, "sub_parts": sub_parts,
                     "bottleneck": bottleneck, "low_stock": low, "alt_colors": []}
     return result
 

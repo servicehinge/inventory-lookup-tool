@@ -133,11 +133,28 @@ def render_single(r, internal):
     ip = r["tw"]["assemblable_sets"]
     if internal:
         low = r["tw"]["low_stock"]
-        st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets（交期約 / lead time ~1–2 weeks）".format(ip))
+        tw = r["tw"]
+        s1 = tw.get("sets_1ca")
+        s2 = tw.get("sets_from_sub")
+        subs = tw.get("sub_parts") or []
+        # 有第三層（2CA 半成品）時，把總數拆成「1CA 現成單片配對 + 2CA 半成品補組」
+        breakdown = ""
+        if subs:
+            breakdown = "（現成單片 / ready pieces {} ＋ 半成品組裝 / from sub-parts {}）".format(s1, s2)
+        st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets{}（交期約 / lead time ~1–2 weeks）".format(ip, breakdown))
+        st.caption("成品單片庫存 / Finished single-piece (1CA) stock")
         st.table([{"零件/Part": c["code"], "料號/ERP": c["erp"] or "-", "每組需/Need": c["need"],
                    "庫存/Stock": c["qty"], "安全/Safety": c["safety"],
                    "⚠": "低 / Low" if c["below_safety"] else ""}
                   for c in r["tw"]["components"]])
+        if subs:
+            st.caption("半成品 / Sub-parts (2CA) — 單片無現貨時靠這些組裝；共用件（如背板）以整套需求計 / "
+                       "used to assemble when finished pieces are short; shared parts counted per full set")
+            st.table([{"半成品/Sub-part": s.get("desc") or "-", "料號/ERP": s["erp"],
+                       "每組需/Need per set": s["per_set"], "庫存/Stock": s["qty"],
+                       "安全/Safety": s["safety"],
+                       "⚠": ("低 / Low" if s["below_safety"] else ("無此料 / not in TW" if not s.get("in_table") else ""))}
+                      for s in subs])
         if low:
             st.caption("低於安全存量 / Below safety stock: " + ", ".join(low))
         with st.expander("拆解 / Bill of Materials"):
