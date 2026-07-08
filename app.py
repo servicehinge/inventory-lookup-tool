@@ -117,7 +117,13 @@ def render_grid(data, internal):
 def render_headline(r, internal):
     """業務最在意的兩個數字做大：美國現貨 / 台灣（可再組 or 配件庫存）。放在每筆結果最上面。"""
     acc = r["tw"].get("is_accessory")
-    unit = ("件" if internal else "pcs") if acc else ("組" if internal else "sets")
+    shim = r["tw"].get("is_shim")
+    if shim:
+        unit = "包" if internal else "packs"
+    elif acc:
+        unit = "件" if internal else "pcs"
+    else:
+        unit = "組" if internal else "sets"
     us_total = r["us"]["set_total"]
     tw_sets = r["tw"]["assemblable_sets"]
     c1, c2 = st.columns(2)
@@ -151,8 +157,16 @@ def render_single(r, internal):
     st.markdown(f"**{s.get('name', r['model'])}**" + (f"  ·  SKU `{s.get('sku','-')}`" if internal else ""))
     render_headline(r, internal)
     acc = r["tw"].get("is_accessory")
-    unit_en = "pcs" if acc else "sets"
-    qty_col = ("可出件數 / Pcs" if acc else "可出組數 / Sets") if internal else ("Pcs" if acc else "Sets")
+    shim = r["tw"].get("is_shim")
+    if shim:
+        unit_en = "packs"
+        qty_col = ("可出包數 / Packs" if internal else "Packs")
+    elif acc:
+        unit_en = "pcs"
+        qty_col = ("可出件數 / Pcs" if internal else "Pcs")
+    else:
+        unit_en = "sets"
+        qty_col = ("可出組數 / Sets" if internal else "Sets")
     us = r["us"]
     whs = order_whs([x["warehouse"] for x in us["set_stock"] if x["qty"] > 0])
     title = "美國各倉 / United States" if internal else "United States — ready to ship"
@@ -167,6 +181,20 @@ def render_single(r, internal):
              else "US total: **{}** {}".format(us["set_total"], unit_en))
 
     ip = r["tw"]["assemblable_sets"]
+    if shim:
+        tw = r["tw"]
+        c = tw["components"][0]
+        if internal:
+            low = "  ·  ⚠ 低於安全存量 / below safety" if c["below_safety"] else ""
+            st.markdown(f"**台灣庫存 / TW stock**  ·  **{tw['pcs']:,}** 片 / pcs（＝ **{tw['packs']:,}** 包 / packs；"
+                        f"料號 / ERP `{c['erp']}`）{low}")
+            st.caption(f"美國以「包」計（每包 {tw['pack_size']} 片）；台灣以單片計、已換算成包供比較。"
+                       f"安全存量 {tw['safety_pcs']:,} 片。/ US counts packs ({tw['pack_size']} pcs each); "
+                       f"TW counts pieces, converted to packs.")
+        else:
+            st.markdown(f"**In stock**  ·  **{tw['packs']:,}** packs available (lead time ~1–2 weeks if not in US).")
+        render_alts(r, internal)
+        return
     if r["tw"].get("is_accessory"):
         c = r["tw"]["components"][0]
         if internal:
@@ -348,7 +376,19 @@ def is_base_only(m):
     return len(m.strip().upper().split("-")) <= 3
 
 
-if go and model.strip():
+if go and model.strip() and ic.is_shim_query(model):
+    # Metal Door Shim：配件包裝品，直接單品查詢（不走 any-color、不需 HubSpot catalog）
+    try:
+        us_db, tw_db = get_dbs()
+        with st.spinner("Looking up…"):
+            r = ic.lookup(model, us_db=us_db, tw_db=tw_db)
+        if not r["found"]:
+            st.error(("找不到 / " if internal else "") + "Metal Door Shim not found")
+        else:
+            render_single(r, internal)
+    except Exception as e:
+        st.error(f"Error: {type(e).__name__}: {e}")
+elif go and model.strip():
     m = ic.normalize_model(model)  # swing clear 各種寫法（K51L-SWRH / SWLH / 空白）收斂成 K51LSWRH
     show_colors = any_color or is_base_only(m)
     base = "-".join(m.split("-")[:3]) if show_colors else m

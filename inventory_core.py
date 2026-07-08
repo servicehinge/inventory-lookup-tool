@@ -334,8 +334,47 @@ class TWSwingClear:
         return (sets or 0), comps
 
 
+# ---------- Metal Door Shim（配件・包裝品・雙單位）----------
+# 業務打自然語（Metal Door Shim / door shim(s)）；美國以「包」計(10pcs/包，讀墊片庫存分頁)，
+# 台灣以單片計(ERP 3PS14150)。兩者統一換算成「包」比較。
+SHIM_ERP = "3PS14150"
+SHIM_PACK = 10
+
+
+def is_shim_query(text):
+    return "SHIM" in (text or "").upper()
+
+
+def lookup_shim(us_db=None, tw_db=None):
+    us_db = us_db or USInventoryDB()
+    tw_db = tw_db or TWInventory()
+    us_by_wh = us_db.shim_stock()  # 各倉包數
+    set_stock = [{"warehouse": w, "qty": q} for w, q in us_by_wh.items() if q]
+    us_total = sum(us_by_wh.values())
+    rec = tw_db.get(SHIM_ERP)
+    pcs = rec["qty"] if rec else 0
+    safety_pcs = rec["safety"] if rec else 0
+    packs = pcs // SHIM_PACK
+    below = bool(rec) and pcs < safety_pcs
+    return {
+        "model": "Metal Door Shim (10pcs/pack)", "found": bool(rec) or bool(set_stock), "note": "",
+        "set": {"name": "Metal Door Shim", "sku": "MetalDoorShim10"},
+        "decomposition": [{"code": "SHIM", "count": 1, "model": "Metal Door Shim",
+                           "sku": "MetalDoorShim10", "erp": SHIM_ERP}],
+        "us": {"set_stock": set_stock, "set_total": us_total, "components": [], "alt_colors": []},
+        "tw": {"components": [{"code": "SHIM", "erp": SHIM_ERP, "name": rec["name"] if rec else None,
+                               "qty": pcs, "safety": safety_pcs, "need": SHIM_PACK, "below_safety": below}],
+               "assemblable_sets": packs, "sets_1ca": packs, "sets_from_sub": 0, "sub_parts": [],
+               "bottleneck": None, "low_stock": (["SHIM"] if below else []), "alt_colors": [],
+               "is_accessory": True, "is_shim": True, "pack_size": SHIM_PACK,
+               "pcs": pcs, "safety_pcs": safety_pcs, "packs": packs},
+    }
+
+
 # ---------- 單一顏色 ----------
 def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
+    if is_shim_query(model):
+        return lookup_shim(us_db=us_db, tw_db=tw_db)
     model = normalize_model(model)
     catalog = catalog or HubSpotCatalog(family_of(model))
     bom = catalog.get_bom(model)

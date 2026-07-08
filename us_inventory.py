@@ -17,6 +17,7 @@ SHEET_ID = os.environ.get("US_SHEET_ID", "1kxvd-e9oafYHjRs9i_Qqvr6Liq9FdwNJag3WE
 DEFAULT_KEY = "/Users/weichuchen/Desktop/03Project/PC202602 ask for shipping quote/shipping-quote-486901-dbd435d38327.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 TABS = ["2026 ZOHO", "2026 XXU加州"]
+SHIM_TAB = "墊片庫存"  # Metal Door Shim 流水帳（美國以「包」計，10pcs/包）；欄 2=CA 3=XXU
 
 
 def norm(s):
@@ -134,6 +135,25 @@ def _classify(entries, model):
     return res
 
 
+def parse_shim_tab(ws):
+    """墊片庫存流水帳 → {'CA ZOHO': 包, 'CA XXU': 包}。優先取底部「剩餘數量」列；
+    否則加總各列 +/- 交易（兩者一致，剩餘列＝進出加總）。單位＝包（10pcs/包）。"""
+    rows = ws.get_all_values()
+    ca = xxu = 0
+    remain = None
+    for r in rows:
+        c0 = (r[0] if len(r) > 0 else "").strip()
+        cca = r[2] if len(r) > 2 else ""
+        cxxu = r[3] if len(r) > 3 else ""
+        if c0 == "剩餘數量":
+            remain = (to_int(cca), to_int(cxxu))
+            continue
+        ca += to_int(cca)
+        xxu += to_int(cxxu)
+    ca, xxu = remain if remain else (ca, xxu)
+    return {"CA ZOHO": ca, "CA XXU": xxu}
+
+
 def _make_creds():
     """優先用環境變數指定的 service account JSON 路徑；Streamlit 端可改用 from_service_account_info。"""
     key = os.environ.get("GOOGLE_SA_KEY", DEFAULT_KEY)
@@ -153,6 +173,15 @@ class USInventoryDB:
             except Exception:
                 continue
             self.entries.extend(parse_tab(ws))
+        self.shim = {}
+        try:
+            self.shim = parse_shim_tab(sh.worksheet(SHIM_TAB))
+        except Exception:
+            self.shim = {}
 
     def lookup(self, model):
         return _classify(self.entries, model)
+
+    def shim_stock(self):
+        """Metal Door Shim 美國庫存（各倉包數，10pcs/包）。"""
+        return dict(self.shim)
