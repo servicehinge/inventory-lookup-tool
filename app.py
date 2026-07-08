@@ -287,27 +287,48 @@ def _batch_status(us_total, tw_sets, internal):
     return "無貨" if internal else "unavailable"
 
 
+WH_SHORT = {"MI WLOK": "MI W-Lock", "CA ZOHO": "CA ZOHO", "CA XXU": "CA XXU", "Amazon USA": "Amazon"}
+
+
 def render_batch(results, internal):
-    """一次多個型號：頂端 bold 摘要表（業務掃一眼），下面每型號可展開看完整明細。"""
+    """一次多個型號：頂端 bold 摘要表（業務掃一眼），下面每型號可展開看完整明細。
+    美國各倉分欄顯示（不加總掉），讓業務看得出每個位置各有多少現貨。"""
     st.markdown((f"### 查詢結果（{len(results)} 個型號）" if internal else f"### Results ({len(results)})"))
-    # ── 摘要表（markdown → 數字可加粗）──
+    # ── 收集有貨的美國倉（跨所有型號），依標準順序分欄 ──
+    whset = set()
+    for m, r in results:
+        if r.get("found"):
+            for s in r["us"]["set_stock"]:
+                if s["qty"] > 0:
+                    whset.add(s["warehouse"])
+    whs = order_whs(whset)
+    wh_cols = [WH_SHORT.get(w, WH_NAME.get(w, w)) for w in whs]
+    # ── 摘要表（markdown → 數字可加粗）：型號 | 各美國倉… | 美國小計 | 台灣可再組 | 狀態 ──
     if internal:
-        head = ["| 型號 / Model | 美國現貨 / Ready | 台灣可再組 / In process | 狀態 / Status |",
-                "|:--|--:|--:|:--|"]
+        cols = ["型號 / Model"] + wh_cols + ["美國小計 / US", "台灣可再組 / In proc.", "狀態 / Status"]
     else:
-        head = ["| Model | Ready to ship | In process | Status |",
-                "|:--|--:|--:|:--|"]
+        cols = ["Model"] + wh_cols + ["US total", "In process", "Status"]
+    align = [":--"] + ["--:"] * (len(wh_cols) + 2) + [":--"]
+    head = ["| " + " | ".join(cols) + " |", "|" + "|".join(align) + "|"]
+    ncell = len(wh_cols) + 2  # 各倉 + 美國小計 + 台灣
     for m, r in results:
         if not r.get("found"):
-            head.append(f"| `{m}` | — | — | {'查無此型號' if internal else 'not found'} |")
+            head.append("| `" + m + "` | " + " | ".join(["—"] * ncell) + " | "
+                        + ("查無此型號" if internal else "not found") + " |")
             continue
+        by = {s["warehouse"]: s["qty"] for s in r["us"]["set_stock"]}
+        cells = [(f"**{by.get(w, 0)}**" if by.get(w, 0) > 0 else "0") for w in whs]
         us_total = r["us"]["set_total"]
         tw_sets = r["tw"]["assemblable_sets"]
-        head.append(f"| `{m}` | **{us_total}** | **{tw_sets}** | {_batch_status(us_total, tw_sets, internal)} |")
+        row = ["`" + m + "`"] + cells + [f"**{us_total}**", f"**{tw_sets}**",
+                                         _batch_status(us_total, tw_sets, internal)]
+        head.append("| " + " | ".join(row) + " |")
     st.markdown("\n".join(head))
-    st.caption(("美國現貨 = 馬上可出的成品組數；台灣可再組 = 半成品可再生產，交期約 1–2 週。"
+    st.caption(("各倉數字 = 該倉馬上可出的成品組數（分開顯示，非加總）；美國小計 = 各倉合計；"
+                "台灣可再組 = 半成品可再生產，交期約 1–2 週。"
                 if internal else
-                "Ready to ship = finished sets available now. In process = additional sets, lead time ~1–2 weeks."))
+                "Each warehouse column = finished sets ready at that location. "
+                "In process = additional sets, lead time ~1–2 weeks."))
     # ── 各型號明細（展開）──
     st.markdown("---")
     for m, r in results:
