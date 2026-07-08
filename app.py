@@ -290,6 +290,13 @@ def _batch_status(us_total, tw_sets, internal):
 WH_SHORT = {"MI WLOK": "MI W-Lock", "CA ZOHO": "CA ZOHO", "CA XXU": "CA XXU", "Amazon USA": "Amazon"}
 
 
+def wh_short(w):
+    """批次表用的短欄名；Amazon 各種寫法（Amazon USA / Canada…）一律縮成 Amazon。"""
+    if "AMAZON" in (w or "").upper():
+        return "Amazon"
+    return WH_SHORT.get(w, WH_NAME.get(w, w))
+
+
 def render_batch(results, internal):
     """一次多個型號：頂端 bold 摘要表（業務掃一眼），下面每型號可展開看完整明細。
     美國各倉分欄顯示（不加總掉），讓業務看得出每個位置各有多少現貨。"""
@@ -302,7 +309,7 @@ def render_batch(results, internal):
                 if s["qty"] > 0:
                     whset.add(s["warehouse"])
     whs = order_whs(whset)
-    wh_cols = [WH_SHORT.get(w, WH_NAME.get(w, w)) for w in whs]
+    wh_cols = [wh_short(w) for w in whs]
     # ── 摘要表（markdown → 數字可加粗）：型號 | 各美國倉… | 美國小計 | 台灣可再組 | 狀態 ──
     if internal:
         cols = ["型號 / Model"] + wh_cols + ["美國小計 / US", "台灣可再組 / In proc.", "狀態 / Status"]
