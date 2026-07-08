@@ -115,26 +115,34 @@ def render_grid(data, internal):
 
 
 def render_headline(r, internal):
-    """業務最在意的兩個數字做大：美國現貨可出 / 台灣可再組。放在每筆結果最上面。"""
+    """業務最在意的兩個數字做大：美國現貨 / 台灣（可再組 or 配件庫存）。放在每筆結果最上面。"""
+    acc = r["tw"].get("is_accessory")
+    unit = ("件" if internal else "pcs") if acc else ("組" if internal else "sets")
     us_total = r["us"]["set_total"]
     tw_sets = r["tw"]["assemblable_sets"]
     c1, c2 = st.columns(2)
+    tw_label_zh = "台灣庫存 / In stock (TW)" if acc else "台灣可再組 / In process (~1–2 wk)"
+    tw_label_en = "In stock (TW)" if acc else "In process (~1–2 wk)"
     if internal:
-        c1.metric("美國現貨可出 / Ready now", f"{us_total} 組")
-        c2.metric("台灣可再組 / In process (~1–2 wk)", f"{tw_sets} 組")
+        c1.metric("美國現貨可出 / Ready now", f"{us_total} {unit}")
+        c2.metric(tw_label_zh, f"{tw_sets} {unit}")
     else:
-        c1.metric("Ready to ship", f"{us_total} sets")
-        c2.metric("In process (~1–2 wk)", f"{tw_sets} sets")
-    # 一行結論（醒目）：有現貨→綠、僅可生產→黃、皆無→紅
+        c1.metric("Ready to ship", f"{us_total} {unit}")
+        c2.metric(tw_label_en, f"{tw_sets} {unit}")
+    # 一行結論（醒目）：有現貨→綠、台灣有貨→黃、皆無→紅
     if us_total > 0:
-        st.success((f"**現貨可出 {us_total} 組，可立即出貨。**" if internal
-                    else f"**{us_total} sets ready to ship now.**")
-                   + (f"（另可再生產 {tw_sets} 組）" if internal and tw_sets else ""))
+        extra = (f"（台灣另有 {tw_sets} {unit}）" if acc else f"（另可再生產 {tw_sets} {unit}）") if tw_sets else ""
+        st.success((f"**現貨可出 {us_total} {unit}，可立即出貨。**" + extra) if internal
+                   else f"**{us_total} {unit} ready to ship now.**")
     elif tw_sets > 0:
-        st.warning(f"**美國無現貨；台灣可再生產 {tw_sets} 組，交期約 1–2 週。**" if internal
-                   else f"**Made to order — {tw_sets} sets, lead time approx. 1–2 weeks.**")
+        if acc:
+            st.warning(f"**美國無現貨；台灣有庫存 {tw_sets} 件（需自台灣調貨，交期約 1–2 週）。**" if internal
+                       else f"**{tw_sets} pcs available, lead time approx. 1–2 weeks.**")
+        else:
+            st.warning(f"**美國無現貨；台灣可再生產 {tw_sets} 組，交期約 1–2 週。**" if internal
+                       else f"**Made to order — {tw_sets} sets, lead time approx. 1–2 weeks.**")
     else:
-        st.error("**目前美國無現貨、台灣也無法組裝。**" if internal
+        st.error("**目前美國與台灣皆無庫存。**" if internal
                  else "**Currently unavailable.**")
 
 
@@ -142,20 +150,33 @@ def render_single(r, internal):
     s = r["set"]
     st.markdown(f"**{s.get('name', r['model'])}**" + (f"  ·  SKU `{s.get('sku','-')}`" if internal else ""))
     render_headline(r, internal)
+    acc = r["tw"].get("is_accessory")
+    unit_en = "pcs" if acc else "sets"
+    qty_col = ("可出件數 / Pcs" if acc else "可出組數 / Sets") if internal else ("Pcs" if acc else "Sets")
     us = r["us"]
     whs = order_whs([x["warehouse"] for x in us["set_stock"] if x["qty"] > 0])
     title = "美國各倉 / United States" if internal else "United States — ready to ship"
     st.markdown(f"**{title}**")
     if whs:
         st.table([{("倉庫 / Warehouse" if internal else "Warehouse"): WH_NAME.get(w, w),
-                   ("可出組數 / Sets" if internal else "Sets"): next(x["qty"] for x in us["set_stock"] if x["warehouse"] == w)}
+                   qty_col: next(x["qty"] for x in us["set_stock"] if x["warehouse"] == w)}
                   for w in whs])
     else:
         st.write("—  (none in stock)" if not internal else "—  目前無現成成品 / none ready to ship")
-    st.write(("美國合計 / US total: **{}** sets".format(us["set_total"])) if internal
-             else "US total: **{}** sets".format(us["set_total"]))
+    st.write(("美國合計 / US total: **{}** {}".format(us["set_total"], unit_en)) if internal
+             else "US total: **{}** {}".format(us["set_total"], unit_en))
 
     ip = r["tw"]["assemblable_sets"]
+    if r["tw"].get("is_accessory"):
+        c = r["tw"]["components"][0]
+        if internal:
+            note = "  ·  ⚠ 低於安全存量 / below safety" if c["below_safety"] else ""
+            st.markdown(f"**台灣庫存 / TW stock**  ·  **{ip}** 件 / pcs（料號 / ERP `{c['erp'] or '-'}`）{note}")
+            st.caption("此為配件（門檔）獨立單件，非套組；數量＝可出件數。/ Standalone accessory (door stop); count = pieces.")
+        else:
+            st.markdown(f"**In stock**  ·  **{ip}** pcs available (lead time approx. 1–2 weeks if not in US).")
+        render_alts(r, internal)
+        return
     if internal:
         low = r["tw"]["low_stock"]
         tw = r["tw"]

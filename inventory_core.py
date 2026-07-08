@@ -121,6 +121,26 @@ def parse_sub_parts(spec):
     return out
 
 
+# ---------- 門檔等配件（WP）：獨立單件，無 BOM，美國走 SKU、台灣走 ERP ----------
+# 名稱/ SKU 帶 -WP01/-WP02（Door Stop 90°/120°）。SKU 例：K51M-450-WP01-90-US32D-304
+# （中間多了角度 90 與 -304 鋼級）→ 乾淨型號 K51M-450-WP01-US32D 需靠別名對上。
+_WP_RE = re.compile(r'-WP\d', re.I)
+_WP_SKU_RE = re.compile(r'^(.+-WP\d+)-\d+-(.+)$', re.I)
+
+
+def is_wp(s):
+    return bool(_WP_RE.search(s or ""))
+
+
+def wp_alias(sku):
+    """WP 產品 SKU → 乾淨型號別名（去角度、去 -304；-316 保留）。查不到回 None。"""
+    m = _WP_SKU_RE.match((sku or "").strip().upper())
+    if not m:
+        return None
+    base, rest = m.group(1), re.sub(r'-304$', '', m.group(2))
+    return normalize_model(f"{base}-{rest}")
+
+
 # ---------- HubSpot：整個系列一次載入 ----------
 class HubSpotCatalog:
     """一次抓 family*（如 K51M-400*）所有 product 進記憶體。之後拆解/找料號全在本機。"""
@@ -167,6 +187,10 @@ class HubSpotCatalog:
                     sk = p["hs_sku"].strip().upper()
                     self.by_sku[sk] = p
                     self.by_sku[normalize_model(sk)] = p
+                    if is_wp(sk):  # 門檔配件：也以乾淨型號別名建索引（K51M-450-WP01-US32D）
+                        alias = wp_alias(sk)
+                        if alias:
+                            self.by_name.setdefault(alias, p)
             after = resp.get("paging", {}).get("next", {}).get("after")
             if not after:
                 break
@@ -321,6 +345,28 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
         return result
     us_db = us_db or USInventoryDB()
     set_name = bom["set"].get("name", model)
+    set_sku = bom["set"].get("sku") or ""
+
+    # ── 門檔等配件（WP）：獨立單件、無 BOM。美國用 SKU 查、台灣用 ERP 查，數量＝件數 ──
+    if is_wp(set_sku) or is_wp(set_name):
+        prod = catalog._find(model) or {}
+        erp = prod.get("wh_erp")
+        us_r = us_db.lookup(set_sku) if set_sku else {"stock": []}
+        set_stock = [{"warehouse": s["warehouse"], "qty": to_int(s["qty"])} for s in us_r["stock"]]
+        result["decomposition"] = [{"code": "WP", "count": 1, "model": set_name, "sku": set_sku, "erp": erp}]
+        result["us"] = {"set_stock": set_stock, "set_total": sum(x["qty"] for x in set_stock),
+                        "components": [], "alt_colors": []}
+        tw_db = tw_db or TWInventory()
+        rec = tw_db.get(erp) if erp else None
+        qty = rec["qty"] if rec else 0
+        safety = rec["safety"] if rec else 0
+        result["tw"] = {"components": [{"code": "WP", "erp": erp, "name": rec["name"] if rec else None,
+                                        "qty": qty, "safety": safety, "need": 1,
+                                        "below_safety": bool(rec) and qty < safety}],
+                        "assemblable_sets": qty, "sets_1ca": qty, "sets_from_sub": 0, "sub_parts": [],
+                        "bottleneck": None, "low_stock": (["WP"] if rec and qty < safety else []),
+                        "alt_colors": [], "is_accessory": True}
+        return result
 
     result["decomposition"] = [{"code": c["code"], "count": c["count"], "model": c["model"],
                                 "sku": c["sku"], "erp": c["erp"]} for c in bom["components"]]
