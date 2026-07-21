@@ -106,7 +106,7 @@ def render_grid(data, internal):
             row[ip_col] = (str(r["in_process"]) + (" ⚠" if internal and r["tw_low"] else "")) if internal else r["in_process"]
         rows.append(row)
     st.table(rows)
-    st.caption(("各倉數字 = 馬上可出的成品組數；製程中 = 可再生產的組數，交期約 1–2 週。"
+    st.caption(("各倉數字 = 馬上可出的成品組數；製程中 = 可再生產的組數，只需包裝即可出貨（少量可隔天出貨，量多約 3 天）。"
                 if internal else
                 "Warehouse numbers = finished sets ready to ship now. "
                 "In process = additional sets we can produce, lead time approx. 1–2 weeks."))
@@ -149,7 +149,7 @@ def render_headline(r, internal):
     tw_display = ("無法確認" if tw_unconf else f"{tw_sets} {unit}")
     tw_display_en = ("N/A" if tw_unconf else f"{tw_sets} {unit}")
     c1, c2 = st.columns(2)
-    tw_label_zh = "台灣庫存 / In stock (TW)" if acc else "台灣可再組 / In process (~1–2 wk)"
+    tw_label_zh = "台灣庫存 / In stock (TW)" if acc else "台灣可再組 / In process (隔天~3天)"
     tw_label_en = "In stock (TW)" if acc else "In process (~1–2 wk)"
     if internal:
         c1.metric("美國現貨可出 / Ready now", f"{us_total} {unit}")
@@ -172,7 +172,7 @@ def render_headline(r, internal):
             st.warning(f"**美國無現貨；台灣有庫存 {tw_sets} 件（需自台灣調貨，交期約 1–2 週）。**" if internal
                        else f"**{tw_sets} pcs available, lead time approx. 1–2 weeks.**")
         else:
-            st.warning(f"**美國無現貨；台灣可再生產 {tw_sets} 組，交期約 1–2 週。**" if internal
+            st.warning(f"**美國無現貨；台灣可再生產 {tw_sets} 組，只需包裝即可出貨（少量可隔天、量多約 3 天）。**" if internal
                        else f"**Made to order — {tw_sets} sets, lead time approx. 1–2 weeks.**")
     else:
         st.error("**目前美國與台灣皆無庫存。**" if internal
@@ -248,7 +248,7 @@ def render_single(r, internal):
             breakdown = ""
             if subs:
                 breakdown = "（現成單片 / ready pieces {} ＋ 半成品組裝 / from sub-parts {}）".format(s1, s2)
-            st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets{}（交期約 / lead time ~1–2 weeks）".format(ip, breakdown))
+            st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets{}（只需包裝即可出貨：少量可隔天、量多約 3 天）".format(ip, breakdown))
         st.caption("成品單片庫存 / Finished single-piece (1CA) stock")
         st.table([_tw_comp_row(c) for c in r["tw"]["components"]])
         if subs:
@@ -296,7 +296,7 @@ def render_alts(r, internal):
                                                      for w, q in a["by_wh"].items())}
                       for a in us_alt])
         if tw_alt:
-            st.markdown("　**製程中 / In process (~1–2 weeks):**")
+            st.markdown("　**製程中 / In process (隔天~3天):**")
             st.table([{"顏色 / Color": f"{a['color_name']} ({a['color']})",
                        "可再生產組數 / Sets": a["sets"]} for a in tw_alt])
     else:
@@ -318,7 +318,7 @@ def _batch_status(us_total, tw_sets, internal, tw_unconf=False):
     if tw_unconf:
         return "無法確認（缺料號）" if internal else "to be confirmed"
     if tw_sets and tw_sets > 0:
-        return f"需生產 {tw_sets} 組（約 1–2 週）" if internal else f"make-to-order {tw_sets} (1–2 wk)"
+        return f"台灣可組 {tw_sets} 組（隔天~3天）" if internal else f"make-to-order {tw_sets} (1–2 wk)"
     return "無貨" if internal else "unavailable"
 
 
@@ -369,7 +369,7 @@ def render_batch(results, internal):
         head.append("| " + " | ".join(row) + " |")
     st.markdown("\n".join(head))
     st.caption(("各倉數字 = 該倉馬上可出的成品組數（分開顯示，非加總）；美國小計 = 各倉合計；"
-                "台灣可再組 = 半成品可再生產，交期約 1–2 週。"
+                "台灣可再組 = 半成品可再生產，只需包裝即可出貨（少量可隔天，量多約 3 天）。"
                 if internal else
                 "Each warehouse column = finished sets ready at that location. "
                 "In process = additional sets, lead time ~1–2 weeks."))
