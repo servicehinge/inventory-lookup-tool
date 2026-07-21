@@ -87,9 +87,13 @@ def fmt_single(r):
         lines.append("美國/US: 無現貨 / none ready")
 
     tw = r["tw"]
-    tw_line = f"台灣製程中/In process: {tw['assemblable_sets']} 組/sets"
-    if tw.get("bottleneck"):
-        tw_line += f"（瓶頸/bottleneck {tw['bottleneck']}）"
+    if tw.get("unconfirmable"):
+        miss = "、".join(tw.get("missing_erp") or [])
+        tw_line = f"台灣製程中/In process: 無法確認/unconfirmable（單片 {miss} 未建料號/missing ERP）"
+    else:
+        tw_line = f"台灣製程中/In process: {tw['assemblable_sets']} 組/sets"
+        if tw.get("bottleneck"):
+            tw_line += f"（瓶頸/bottleneck {tw['bottleneck']}）"
     lines.append(tw_line)
     if tw.get("note"):
         lines.append(f"  ※ {tw['note']}")
@@ -99,7 +103,7 @@ def fmt_single(r):
     ua = us.get("alt_colors") or []
     ta = tw.get("alt_colors") or []
     if ua or ta:
-        oos = us["set_total"] == 0 and tw["assemblable_sets"] == 0
+        oos = us["set_total"] == 0 and (tw.get("unconfirmable") or tw["assemblable_sets"] == 0)
         lines.append("")
         lines.append("⚠ 此色無貨，其他可選顏色 / Out of stock — other finishes:"
                      if oos else "其他顏色 / Other finishes:")
@@ -115,7 +119,8 @@ def fmt_grid(data):
         return f"{data['base']}\n查無變體 / no variants"
     lines = [f"{data['base']} — 各顏色 / by finish"]
     for r in data["rows"]:
-        seg = f"{r['finish']} {r['color']}: 美國/US {r['us_total']}、製程/In-proc {r['in_process']}"
+        ip_disp = "無法確認/NA" if r.get("tw_unconfirmable") else r["in_process"]
+        seg = f"{r['finish']} {r['color']}: 美國/US {r['us_total']}、製程/In-proc {ip_disp}"
         if r.get("tw_low"):
             seg += " ⚠"
         lines.append(seg)

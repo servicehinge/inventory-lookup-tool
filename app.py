@@ -80,6 +80,18 @@ def order_whs(whs):
 
 
 # ---------------- render ----------------
+def _tw_comp_row(c):
+    """台灣單片庫存表的一列；缺料號（無法查庫存）的單片明確標「無料號」而非假裝 0。
+    整欄一律 str，避免 st.table 混 int/str 觸發 Arrow 警告。"""
+    unv = c.get("unverifiable")
+    return {"零件/Part": c["code"],
+            "料號/ERP": ("❌ 無料號 / no ERP" if unv else (c["erp"] or "-")),
+            "每組需/Need": str(c["need"]),
+            "台灣庫存/TW stock": ("查不到 / N/A" if unv else str(c["qty"])),
+            "安全/Safety": ("-" if unv else str(c["safety"])),
+            "⚠": ("缺料號 / missing" if unv else ("低 / Low" if c["below_safety"] else ""))}
+
+
 def render_grid(data, internal):
     whs = order_whs(data["warehouses"])
     ip_col = "製程中 / In process" if internal else "In process"
@@ -88,7 +100,10 @@ def render_grid(data, internal):
         row = {("顏色 / Color" if internal else "Color"): f"{r['finish']} — {r['color']}"}
         for w in whs:
             row[WH_NAME.get(w, w)] = r["us_by_wh"].get(w, 0)
-        row[ip_col] = (str(r["in_process"]) + (" ⚠" if internal and r["tw_low"] else "")) if internal else r["in_process"]
+        if r.get("tw_unconfirmable"):
+            row[ip_col] = ("無法確認（缺料號）" if internal else "N/A")
+        else:
+            row[ip_col] = (str(r["in_process"]) + (" ⚠" if internal and r["tw_low"] else "")) if internal else r["in_process"]
         rows.append(row)
     st.table(rows)
     st.caption(("各倉數字 = 馬上可出的成品組數；製程中 = 可再生產的組數，交期約 1–2 週。"
@@ -100,12 +115,15 @@ def render_grid(data, internal):
         for r in data["rows"]:
             comps = r.get("tw_components") or []
             mark = " ⚠" if r["tw_low"] else ""
-            with st.expander(f"{r['finish']} — {r['color']}  ·  可組 {r['in_process']} 組"
-                             f"（瓶頸 {r.get('bottleneck') or '-'}）{mark}", expanded=True):
-                st.table([{"零件/Part": c["code"], "料號/ERP": c["erp"] or "-", "每組需/Need": c["need"],
-                           "台灣庫存/TW stock": c["qty"], "安全/Safety": c["safety"],
-                           "⚠": "低 / Low" if c["below_safety"] else ""}
-                          for c in comps])
+            if r.get("tw_unconfirmable"):
+                head_qty = "無法確認（缺料號 " + "、".join(r.get("missing_erp") or []) + "）"
+            else:
+                head_qty = f"可組 {r['in_process']} 組（瓶頸 {r.get('bottleneck') or '-'}）"
+            with st.expander(f"{r['finish']} — {r['color']}  ·  {head_qty}{mark}", expanded=True):
+                if r.get("tw_unconfirmable"):
+                    st.warning("單片 " + "、".join(r.get("missing_erp") or []) + " 未建料號，"
+                               "台灣庫存查不到；出貨需全部單片齊備，故此顏色可組數無法確認。")
+                st.table([_tw_comp_row(c) for c in comps])
                 loose = r.get("us_loose") or []
                 if loose:
                     st.caption("美國零散零件 / US loose: " +
@@ -126,21 +144,30 @@ def render_headline(r, internal):
         unit = "組" if internal else "sets"
     us_total = r["us"]["set_total"]
     tw_sets = r["tw"]["assemblable_sets"]
+    tw_unconf = bool(r["tw"].get("unconfirmable"))
+    missing = r["tw"].get("missing_erp") or []
+    tw_display = ("無法確認" if tw_unconf else f"{tw_sets} {unit}")
+    tw_display_en = ("N/A" if tw_unconf else f"{tw_sets} {unit}")
     c1, c2 = st.columns(2)
     tw_label_zh = "台灣庫存 / In stock (TW)" if acc else "台灣可再組 / In process (~1–2 wk)"
     tw_label_en = "In stock (TW)" if acc else "In process (~1–2 wk)"
     if internal:
         c1.metric("美國現貨可出 / Ready now", f"{us_total} {unit}")
-        c2.metric(tw_label_zh, f"{tw_sets} {unit}")
+        c2.metric(tw_label_zh, tw_display)
     else:
         c1.metric("Ready to ship", f"{us_total} {unit}")
-        c2.metric(tw_label_en, f"{tw_sets} {unit}")
-    # 一行結論（醒目）：有現貨→綠、台灣有貨→黃、皆無→紅
+        c2.metric(tw_label_en, tw_display_en)
+    # 一行結論（醒目）：有現貨→綠、無法確認→黃(說明)、台灣有貨→黃、皆無→紅
     if us_total > 0:
-        extra = (f"（台灣另有 {tw_sets} {unit}）" if acc else f"（另可再生產 {tw_sets} {unit}）") if tw_sets else ""
+        extra = ("（台灣可組數無法確認・缺料號）" if tw_unconf
+                 else (f"（台灣另有 {tw_sets} {unit}）" if acc else f"（另可再生產 {tw_sets} {unit}）") if tw_sets else "")
         st.success((f"**現貨可出 {us_total} {unit}，可立即出貨。**" + extra) if internal
                    else f"**{us_total} {unit} ready to ship now.**")
-    elif tw_sets > 0:
+    elif tw_unconf:
+        st.warning(("**美國無現貨；台灣可組數無法確認——單片 {} 未建料號（wh_erp 空白），"
+                    "庫存查不到。需先補建料號才能判斷能否組裝出貨。**").format("、".join(missing)) if internal
+                   else "**Made to order — availability to be confirmed. Please contact us for lead time.**")
+    elif tw_sets and tw_sets > 0:
         if acc:
             st.warning(f"**美國無現貨；台灣有庫存 {tw_sets} 件（需自台灣調貨，交期約 1–2 週）。**" if internal
                        else f"**{tw_sets} pcs available, lead time approx. 1–2 weeks.**")
@@ -208,19 +235,22 @@ def render_single(r, internal):
     if internal:
         low = r["tw"]["low_stock"]
         tw = r["tw"]
-        s1 = tw.get("sets_1ca")
-        s2 = tw.get("sets_from_sub")
         subs = tw.get("sub_parts") or []
-        # 有第三層（2CA 半成品）時，把總數拆成「1CA 現成單片配對 + 2CA 半成品補組」
-        breakdown = ""
-        if subs:
-            breakdown = "（現成單片 / ready pieces {} ＋ 半成品組裝 / from sub-parts {}）".format(s1, s2)
-        st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets{}（交期約 / lead time ~1–2 weeks）".format(ip, breakdown))
+        if tw.get("unconfirmable"):
+            missing = tw.get("missing_erp") or []
+            st.markdown("**製程中 / In process**  ·  ⚠️ **無法確認可組數 / cannot confirm**")
+            st.warning(("單片 **{}** 未建料號（wh_erp 空白），台灣庫存查不到。出貨需全部單片齊備，"
+                        "故此顏色可組數**無法確認**——請先補建這些單片的料號後再判斷。").format("、".join(missing)))
+        else:
+            s1 = tw.get("sets_1ca")
+            s2 = tw.get("sets_from_sub")
+            # 有第三層（2CA 半成品）時，把總數拆成「1CA 現成單片配對 + 2CA 半成品補組」
+            breakdown = ""
+            if subs:
+                breakdown = "（現成單片 / ready pieces {} ＋ 半成品組裝 / from sub-parts {}）".format(s1, s2)
+            st.markdown("**製程中 / In process**  ·  可再生產 / can produce **{}** sets{}（交期約 / lead time ~1–2 weeks）".format(ip, breakdown))
         st.caption("成品單片庫存 / Finished single-piece (1CA) stock")
-        st.table([{"零件/Part": c["code"], "料號/ERP": c["erp"] or "-", "每組需/Need": c["need"],
-                   "庫存/Stock": c["qty"], "安全/Safety": c["safety"],
-                   "⚠": "低 / Low" if c["below_safety"] else ""}
-                  for c in r["tw"]["components"]])
+        st.table([_tw_comp_row(c) for c in r["tw"]["components"]])
         if subs:
             st.caption("半成品 / Sub-parts (2CA) — 單片無現貨時靠這些組裝；共用件（如背板）以整套需求計 / "
                        "used to assemble when finished pieces are short; shared parts counted per full set")
@@ -235,7 +265,10 @@ def render_single(r, internal):
             st.table([{"零件/Part": d["code"], "數量/Qty": d["count"], "ERP 料號": d["erp"] or "-"}
                       for d in r["decomposition"]])
     else:
-        st.markdown("**In process**  ·  {} more sets available, lead time approx. **1–2 weeks**.".format(ip))
+        if r["tw"].get("unconfirmable"):
+            st.markdown("**In process**  ·  Made to order — availability to be confirmed, lead time approx. **1–2 weeks**.")
+        else:
+            st.markdown("**In process**  ·  {} more sets available, lead time approx. **1–2 weeks**.".format(ip))
 
     render_alts(r, internal)
 
@@ -246,7 +279,7 @@ def render_alts(r, internal):
     tw_alt = r["tw"].get("alt_colors") or []
     if not us_alt and not tw_alt:
         return
-    out_of_stock = r["us"]["set_total"] == 0 and r["tw"]["assemblable_sets"] == 0
+    out_of_stock = r["us"]["set_total"] == 0 and (r["tw"].get("unconfirmable") or r["tw"]["assemblable_sets"] == 0)
     n = len(set([a["color"] for a in us_alt] + [a["color"] for a in tw_alt]))
 
     if internal:
@@ -279,10 +312,12 @@ def render_alts(r, internal):
             st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["sets"]} for a in tw_alt])
 
 
-def _batch_status(us_total, tw_sets, internal):
+def _batch_status(us_total, tw_sets, internal, tw_unconf=False):
     if us_total > 0:
         return f"現貨 {us_total} 組，可立即出" if internal else f"{us_total} ready to ship"
-    if tw_sets > 0:
+    if tw_unconf:
+        return "無法確認（缺料號）" if internal else "to be confirmed"
+    if tw_sets and tw_sets > 0:
         return f"需生產 {tw_sets} 組（約 1–2 週）" if internal else f"make-to-order {tw_sets} (1–2 wk)"
     return "無貨" if internal else "unavailable"
 
@@ -327,8 +362,10 @@ def render_batch(results, internal):
         cells = [(f"**{by.get(w, 0)}**" if by.get(w, 0) > 0 else "0") for w in whs]
         us_total = r["us"]["set_total"]
         tw_sets = r["tw"]["assemblable_sets"]
-        row = ["`" + m + "`"] + cells + [f"**{us_total}**", f"**{tw_sets}**",
-                                         _batch_status(us_total, tw_sets, internal)]
+        tw_unconf = bool(r["tw"].get("unconfirmable"))
+        tw_cell = "無法確認" if tw_unconf else f"**{tw_sets}**"
+        row = ["`" + m + "`"] + cells + [f"**{us_total}**", tw_cell,
+                                         _batch_status(us_total, tw_sets, internal, tw_unconf)]
         head.append("| " + " | ".join(row) + " |")
     st.markdown("\n".join(head))
     st.caption(("各倉數字 = 該倉馬上可出的成品組數（分開顯示，非加總）；美國小計 = 各倉合計；"
@@ -345,8 +382,12 @@ def render_batch(results, internal):
             continue
         us_total = r["us"]["set_total"]
         tw_sets = r["tw"]["assemblable_sets"]
-        title = (f"{m}　·　美國 {us_total} 組／台灣可再組 {tw_sets} 組" if internal
-                 else f"{m} — ready {us_total} / in process {tw_sets}")
+        if r["tw"].get("unconfirmable"):
+            title = (f"{m}　·　美國 {us_total} 組／台灣可組 無法確認（缺料號）" if internal
+                     else f"{m} — ready {us_total} / in process N/A")
+        else:
+            title = (f"{m}　·　美國 {us_total} 組／台灣可再組 {tw_sets} 組" if internal
+                     else f"{m} — ready {us_total} / in process {tw_sets}")
         with st.expander(title):
             render_single(r, internal)
 

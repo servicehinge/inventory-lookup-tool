@@ -558,9 +558,12 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
         qty = rec["qty"] if rec else 0
         safety = rec["safety"] if rec else 0
         need = c["count"]
+        # 「無法確認」單片：既無 1CA 料號、也無 2CA 半成品 → 根本查不到它的庫存。
+        unverifiable = (not c["erp"]) and (not c.get("sub_parts"))
         tw_comps.append({"code": c["code"], "erp": c["erp"], "name": rec["name"] if rec else None,
                          "qty": qty, "safety": safety, "need": need,
-                         "below_safety": bool(rec) and qty < safety})
+                         "below_safety": bool(rec) and qty < safety,
+                         "unverifiable": unverifiable})
         cap = qty // need if need else 0
         sets_1ca = cap if sets_1ca is None else min(sets_1ca, cap)
         if rec and qty < safety:
@@ -590,6 +593,17 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
             low.append(f"半成品·{sub_desc.get(erp, erp)}")
     sets_from_sub = sets_from_sub or 0
 
+    # 「無法確認」判定：只要有任一單片既無 1CA 料號、也無 2CA 半成品路徑，就查不到它的庫存。
+    # 出貨需「全部單片」都齊備，故整組可組數無法確認——絕不能拿有貨的單片假裝整組能出（會超賣）。
+    missing_erp = [c["code"] for c in bom["components"]
+                   if (not c["erp"]) and (not c.get("sub_parts"))]
+    if missing_erp:
+        result["tw"] = {"components": tw_comps, "assemblable_sets": None,
+                        "sets_1ca": sets_1ca, "sets_from_sub": sets_from_sub, "sub_parts": sub_parts,
+                        "bottleneck": None, "low_stock": low, "alt_colors": [],
+                        "unconfirmable": True, "missing_erp": missing_erp}
+        return result
+
     total_sets = sets_1ca + sets_from_sub
     # bottleneck：能靠 1CA 配套時報最緊的單片；否則（全靠 2CA）報最緊的半成品
     if sets_1ca > 0 or not sub_parts:
@@ -599,7 +613,8 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
         bottleneck = sub_bottleneck
     result["tw"] = {"components": tw_comps, "assemblable_sets": total_sets,
                     "sets_1ca": sets_1ca, "sets_from_sub": sets_from_sub, "sub_parts": sub_parts,
-                    "bottleneck": bottleneck, "low_stock": low, "alt_colors": []}
+                    "bottleneck": bottleneck, "low_stock": low, "alt_colors": [],
+                    "unconfirmable": False, "missing_erp": []}
     return result
 
 
@@ -623,12 +638,15 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
             "finish": v["finish"], "color": v.get("color", v["finish"]), "model": v["model"],
             "us_by_wh": us_by_wh, "us_total": r["us"]["set_total"],
             "in_process": r["tw"]["assemblable_sets"], "tw_low": bool(r["tw"]["low_stock"]),
+            "tw_unconfirmable": bool(r["tw"].get("unconfirmable")),
+            "missing_erp": r["tw"].get("missing_erp") or [],
             "bottleneck": r["tw"]["bottleneck"],
             "tw_components": r["tw"]["components"],   # 每色的 SA/SA1 料號+台灣庫存
             "us_loose": r["us"]["components"],         # 美國零散零件
         })
-    # 排序：美國現成多的在前，其次製程中多的
-    rows.sort(key=lambda x: (x["us_total"], x["in_process"]), reverse=True)
+    # 排序：美國現成多的在前，其次製程中多的（無法確認的 in_process=None 視為 -1 排最後）
+    rows.sort(key=lambda x: (x["us_total"], x["in_process"] if x["in_process"] is not None else -1),
+              reverse=True)
     # 有貨的倉（任一顏色 >0）才當欄位
     whs = set()
     for r in rows:
