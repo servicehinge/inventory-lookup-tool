@@ -32,7 +32,13 @@ COLOR_NAMES = {"US32D": "Satin Stainless", "US19": "Flat Black", "695": "Dark Br
 _PURE_COLOR = re.compile(r"^(US\d+[A-Z]?|\d{3})$")
 
 HUBSPOT_TOKEN = os.environ.get("HUBSPOT_API_TOKEN", "")
-TW_SHEET_ID = os.environ.get("TW_SHEET_ID", "1UrNy8UHg3BlY5YrxmJd4urzkTgQ2_eCq_UO_Wzwbb5c")
+# 台灣 AU1 庫存：工廠每天把最新一份匯出（庫存現量.xlsx）丟進這個 Drive 資料夾。
+# 一律讀資料夾裡「最新」的那份 → 每次查都是最新資料，不再指死一張會過期的 sheet。
+TW_FOLDER_ID = os.environ.get("TW_FOLDER_ID", "1smPY7HOXIa7Z0XgpgwTANqwN5AkKkVgE")
+# 舊版單一 sheet：預設留空；只有明確設 TW_SHEET_ID 才用（資料可能過期，純救急備援）。
+TW_SHEET_ID = os.environ.get("TW_SHEET_ID", "")
+DEFAULT_SA_KEY = ("/Users/weichuchen/Desktop/03Project/PC202602 ask for shipping quote/"
+                  "shipping-quote-486901-dbd435d38327.json")
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
 _SSL = ssl.create_default_context(cafile=certifi.where())
 
@@ -251,17 +257,86 @@ class HubSpotCatalog:
 
 
 # ---------- 台灣 AU1 ----------
+_XLSX_MIME = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_GSHEET_MIME = "application/vnd.google-apps.spreadsheet"
+
+
+def _sa_credentials():
+    from google.oauth2.service_account import Credentials
+    key = os.environ.get("GOOGLE_SA_KEY", DEFAULT_SA_KEY)
+    return Credentials.from_service_account_file(key, scopes=SCOPES)
+
+
+def _sa_email():
+    try:
+        return _sa_credentials().service_account_email
+    except Exception:
+        return "(service account)"
+
+
+def _rows_from_xlsx(session, file_id):
+    """下載 Drive 上的 .xlsx（工廠原始匯出）並轉成字串二維陣列。"""
+    import io
+    from openpyxl import load_workbook
+    r = session.get("https://www.googleapis.com/drive/v3/files/%s" % file_id,
+                    params={"alt": "media", "supportsAllDrives": "true"})
+    r.raise_for_status()
+    wb = load_workbook(io.BytesIO(r.content), read_only=True, data_only=True)
+    ws = wb[wb.sheetnames[0]]
+    rows = []
+    for row in ws.iter_rows(values_only=True):
+        rows.append(["" if c is None else str(c).strip() for c in row])
+    wb.close()
+    return rows
+
+
+def _tw_rows_from_folder(folder_id):
+    """讀資料夾裡最新一份 AU1 庫存：優先原始 .xlsx（工廠來源、不靠轉檔），
+    沒有 .xlsx 才退讀已轉成 Google Sheet 的鏡像。回字串二維陣列；讀不到回 None。"""
+    from google.auth.transport.requests import AuthorizedSession
+    sess = AuthorizedSession(_sa_credentials())
+    r = sess.get("https://www.googleapis.com/drive/v3/files",
+                 params={"q": "'%s' in parents and trashed=false" % folder_id,
+                         "orderBy": "modifiedTime desc",
+                         "fields": "files(id,name,mimeType,modifiedTime)",
+                         "pageSize": 100, "supportsAllDrives": "true",
+                         "includeItemsFromAllDrives": "true"})
+    r.raise_for_status()
+    files = r.json().get("files", [])
+    xlsx = [f for f in files if f["mimeType"] == _XLSX_MIME]
+    if xlsx:                                    # 取最新一份原始匯出
+        return _rows_from_xlsx(sess, xlsx[0]["id"])
+    sheets = [f for f in files if f["mimeType"] == _GSHEET_MIME]
+    if sheets:                                  # 退：已轉好的 Google Sheet 鏡像
+        import gspread
+        gc = gspread.authorize(_sa_credentials())
+        return gc.open_by_key(sheets[0]["id"]).sheet1.get_all_values()
+    return None
+
+
 def _tw_rows():
     csv_path = os.environ.get("TW_CSV")
-    if csv_path and os.path.exists(csv_path):
+    if csv_path and os.path.exists(csv_path):    # 本機測試用 CSV
         with open(csv_path, encoding="utf-8") as f:
             return list(csv.reader(f))
-    import gspread
-    from google.oauth2.service_account import Credentials
-    key = os.environ.get("GOOGLE_SA_KEY",
-                         "/Users/weichuchen/Desktop/03Project/PC202602 ask for shipping quote/shipping-quote-486901-dbd435d38327.json")
-    gc = gspread.authorize(Credentials.from_service_account_file(key, scopes=SCOPES))
-    return gc.open_by_key(TW_SHEET_ID).sheet1.get_all_values()
+    folder = os.environ.get("TW_FOLDER_ID", TW_FOLDER_ID)
+    if folder:
+        try:
+            rows = _tw_rows_from_folder(folder)
+        except Exception as e:
+            if not TW_SHEET_ID:
+                raise RuntimeError(
+                    "無法讀取台灣 AU1 庫存資料夾 %s：%s。"
+                    "請確認服務帳號 %s 已被授權讀取該資料夾。" % (folder, e, _sa_email()))
+            rows = None
+        if rows:
+            return rows
+    if TW_SHEET_ID:                              # 明確設定的舊 sheet 備援（可能過期）
+        import gspread
+        gc = gspread.authorize(_sa_credentials())
+        return gc.open_by_key(TW_SHEET_ID).sheet1.get_all_values()
+    raise RuntimeError(
+        "找不到台灣 AU1 庫存來源：資料夾 %s 無可用檔案，也未設 TW_SHEET_ID 備援。" % folder)
 
 
 class TWInventory:
