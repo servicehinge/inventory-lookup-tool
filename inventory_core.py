@@ -446,6 +446,80 @@ def lookup_shim(us_db=None, tw_db=None):
     }
 
 
+# ---------- 美國優先『拆組出貨』 ----------
+def _us_decompose(model, target_components, catalog, us_db):
+    """完整套組美國無現貨時，看能否用「較小的現成套組 ＋ 散裝單片」在美國湊出整組出貨，
+    避免動用台灣。做法：找同尺寸／同色／同角型鋼級、配置為目標『真子集』的最大現成套組
+    （如 C4 找到 C3），差集單片（DS）用美國散片補；可拆組組數 = min(子集套組數, 各差集散片÷每套需求)。
+    target_components = lookup 的 result['decomposition']（[{code,count,...}]）。
+    全在記憶體算（已載入的 catalog + 已讀入的美國表），不打任何 API。回 None 表示無可行拆組。"""
+    nname = normalize_model(model)
+    parts = nname.split("-")
+    if len(parts) < 4:
+        return None
+    func, suffix = parts[2], parts[3:]        # 功能碼(C4) 與 顏色/角型/鋼級後段(必須完全相同)
+    target = Counter()
+    for c in target_components:
+        target[c["code"]] += c["count"]
+    if sum(target.values()) < 2:
+        return None                           # 單片本身無可拆
+    best, seen = None, set()
+    for name, p in catalog.by_name.items():
+        cfg = (p.get("wh_configuration") or "")
+        if "." not in cfg:
+            continue                          # 只考慮「套組」（有拆解）
+        nn = normalize_model(name)
+        if nn in seen:
+            continue
+        seen.add(nn)
+        pp = nn.split("-")
+        if len(pp) < 4 or pp[:2] != parts[:2] or pp[3:] != suffix or pp[2] == func:
+            continue                          # 尺寸/顏色/角型/鋼級須一致，且非完整套組本身
+        cand = Counter(x.strip() for x in cfg.split(".") if x.strip())
+        if any(cand[k] > target.get(k, 0) for k in cand):
+            continue                          # 必須是目標的真子集（每片數量 ≤ 目標）
+        remainder = target - cand
+        if not remainder:
+            continue                          # 配置與目標相同，非拆解
+        set_r = us_db.lookup(nn)              # 子集套組美國現貨
+        set_rows = [{"warehouse": s["warehouse"], "qty": to_int(s["qty"])}
+                    for s in set_r["stock"] if to_int(s["qty"]) > 0]
+        set_total = sum(x["qty"] for x in set_rows)
+        if set_total <= 0:
+            continue
+        cap, extra, ok = set_total, [], True  # 差集散片美國須全部有貨
+        for code, cnt in remainder.items():
+            pm = nn.replace(f"-{pp[2]}-", f"-{code}-", 1)
+            pr = us_db.lookup(pm)
+            rows = [{"warehouse": s["warehouse"], "qty": to_int(s["qty"])}
+                    for s in pr["stock"] if to_int(s["qty"]) > 0]
+            ptot = sum(x["qty"] for x in rows)
+            if ptot <= 0:
+                ok = False
+                break
+            cap = min(cap, ptot // cnt)
+            extra.append({"code": code, "model": pm, "per_set": cnt, "stock": rows, "total": ptot})
+        if not ok or cap <= 0:
+            continue
+        score = (sum(cand.values()), cap)     # 子集越大(越接近完整)越優先，其次可組數越多
+        if best is None or score > best["_score"]:
+            best = {"_score": score, "sets": cap,
+                    "via": {"code": pp[2], "model": nn, "stock": set_rows, "total": set_total},
+                    "extra_pieces": extra}
+    if not best:
+        return None
+    # bottleneck：限制可組數的那一項（子集套組 或 某差集散片）
+    b = best["via"]["code"] if best["via"]["total"] == best["sets"] else None
+    if b is None:
+        for e in best["extra_pieces"]:
+            if e["total"] // e["per_set"] == best["sets"]:
+                b = e["code"]
+                break
+    best["bottleneck"] = b or best["via"]["code"]
+    best.pop("_score")
+    return best
+
+
 # ---------- 單一顏色 ----------
 def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
     if is_shim_query(model):
@@ -499,6 +573,10 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
                             "total": sum(x["qty"] for x in rows)})
     result["us"] = {"set_stock": set_stock, "set_total": sum(x["qty"] for x in set_stock),
                     "components": comp_us, "alt_colors": []}
+    # 美國優先『拆組出貨』：完整套組美國無現貨時，看能否用「較小現成套組＋散片」在美國湊出整組。
+    result["us"]["decomposed"] = (
+        _us_decompose(model, result["decomposition"], catalog, us_db)
+        if result["us"]["set_total"] <= 0 else None)
 
     sw = is_swing_clear(model)
     color = finish_color(set_name) or finish_color(model)

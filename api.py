@@ -85,6 +85,12 @@ def fmt_single(r):
         lines.append(f"美國/US: {wh}（合計/total {us['set_total']} sets）")
     else:
         lines.append("美國/US: 無現貨 / none ready")
+        dec = us.get("decomposed")
+        if dec:
+            via = dec["via"]
+            ex = "＋".join(e["code"] for e in dec["extra_pieces"])
+            lines.append(f"美國可拆組/US split-fill: {dec['sets']} sets"
+                         f"（{via['code']}套組＋散片{ex} / ready {via['code']} + loose {ex}）")
 
     tw = r["tw"]
     if tw.get("unconfirmable"):

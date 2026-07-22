@@ -136,6 +136,11 @@ def render_grid(data, internal):
                                                   for w in c["stock"]) for c in loose))
 
 
+def _wh_hint(stock):
+    """[{warehouse,qty}] → 'MI W-Lock 6、CA ZOHO 17' 之類的簡短來源字串。"""
+    return "、".join(f"{WH_SHORT.get(x['warehouse'], x['warehouse'])} {x['qty']}" for x in stock)
+
+
 def render_headline(r, internal):
     """業務最在意的兩個數字做大：美國現貨 / 台灣（可再組 or 配件庫存）。放在每筆結果最上面。"""
     acc = r["tw"].get("is_accessory")
@@ -186,6 +191,24 @@ def render_headline(r, internal):
     else:
         st.error("**目前美國與台灣皆無庫存。**" if internal
                  else "**Currently unavailable.**")
+    # 美國優先『拆組出貨』：完整套組美國無現貨、但可用「較小現成套組＋散裝單片」在美國湊成整組。
+    dec = r["us"].get("decomposed")
+    if us_total == 0 and dec and not acc and not shim:
+        via = dec["via"]
+        parts_txt = "＋".join(e["code"] for e in dec["extra_pieces"])
+        if internal:
+            src_via = _wh_hint(via["stock"])
+            multi = len(dec["extra_pieces"]) > 1
+            src_extra = "；".join((f"{e['code']} " if multi else "") + _wh_hint(e["stock"])
+                                  for e in dec["extra_pieces"])
+            st.info(("**美國可拆組出貨 {n} 組**：用現成 **{v}** 套組（{sv}）＋散裝單片 **{p}**（{se}）"
+                     "在美國組成整組，仍從美國出貨、免動台灣（是否採用由業務決定）。\n\n"
+                     "**US split-fill: {n} set(s)** — combine ready **{v}** sets ({sv}) with loose **{p}** "
+                     "piece(s) ({se}); still ships from US.").format(
+                         n=dec["sets"], v=via["code"], sv=src_via, p=parts_txt, se=src_extra))
+        else:
+            st.info("**{n} set(s) can be fulfilled from US** (assembled from US stock, ships from US).".format(
+                n=dec["sets"]))
 
 
 def render_single(r, internal):
@@ -215,6 +238,26 @@ def render_single(r, internal):
         st.write("—  (none in stock)" if not internal else "—  目前無現成成品 / none ready to ship")
     st.write(("美國合計 / US total: **{}** {}".format(us["set_total"], unit_en)) if internal
              else "US total: **{}** {}".format(us["set_total"], unit_en))
+
+    # 美國拆組明細（完整套組無現貨、可用較小套組＋散片湊出時；內部才列料號級明細）
+    dec = us.get("decomposed")
+    if us["set_total"] == 0 and dec and internal:
+        via = dec["via"]
+        bn = dec["bottleneck"]
+        st.markdown("**美國可拆組出貨 / US split-fill: {} 組 / sets**".format(dec["sets"]))
+        st.caption("完整套組美國無現貨，但可用現成較小套組＋散裝單片在美國組成整組出貨（免動台灣）。/ "
+                   "No complete set in US, but can be assembled from a smaller ready set + loose pieces, "
+                   "still shipping from US.")
+        rows = [{"來源 / Source": "現成套組 / ready set", "項目 / Item": via["code"],
+                 "每組需 / Per set": "1",
+                 "美國庫存 / US stock": f"{_wh_hint(via['stock'])}（共 / total {via['total']}）"}]
+        for e in dec["extra_pieces"]:
+            rows.append({"來源 / Source": "散裝單片 / loose piece", "項目 / Item": e["code"],
+                         "每組需 / Per set": str(e["per_set"]),
+                         "美國庫存 / US stock": f"{_wh_hint(e['stock'])}（共 / total {e['total']}）"})
+        st.table(rows)
+        st.caption("可拆組 {n} 組，瓶頸 {b}。/ {n} sets can be split-filled; bottleneck: {b}.".format(
+            n=dec["sets"], b=bn))
 
     ip = r["tw"]["assemblable_sets"]
     if shim:
