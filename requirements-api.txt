@@ -3,3 +3,4 @@ uvicorn>=0.29
 gspread>=6.0
 google-auth>=2.30
 certifi>=2024.0
+openpyxl>=3.1
