@@ -750,6 +750,9 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
             "tw_sub_parts": r["tw"].get("sub_parts") or [],
             "tw_sets_1ca": r["tw"].get("sets_1ca", 0),
             "us_loose": r["us"]["components"],         # 美國零散零件
+            "us_set_stock": r["us"]["set_stock"],      # 美國現成套組各倉
+            "us_decomposed": r["us"].get("decomposed"),  # 拆組（子集套組＋散片）明細
+            "decomposition": r["decomposition"],
         })
     # 排序：美國可出（含散片/拆組）多的在前，其次台灣可組多的（無法確認的 in_process=None 視為 -1 排最後）
     rows.sort(key=lambda x: (x["us_ship"], x["in_process"] if x["in_process"] is not None else -1),

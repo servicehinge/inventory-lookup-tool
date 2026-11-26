@@ -92,18 +92,30 @@ def _tw_comp_row(c):
             "⚠": ("缺料號 / missing" if unv else ("低 / Low" if c["below_safety"] else ""))}
 
 
-_HOW_ZH = {"loose": "散片湊 / loose", "split": "拆組 / split-fill"}
+# ---------- 共用版面：單一顏色（內部）與 any-color 用同一套 ----------
+# view = 從 ic.lookup 結果或 lookup_all_colors 的列整理出來的統一格式，讓兩種頁面長得一樣。
+def _view_from_lookup(r):
+    ship, how = ic.us_ship(r)
+    tw = r["tw"]
+    return {"us_ship": ship, "us_ship_how": how, "us_set_stock": r["us"]["set_stock"],
+            "us_decomposed": r["us"].get("decomposed"), "us_loose": r["us"].get("components") or [],
+            "decomposition": r["decomposition"], "in_process": tw["assemblable_sets"],
+            "tw_unconfirmable": bool(tw.get("unconfirmable")), "missing_erp": tw.get("missing_erp") or [],
+            "bottleneck": tw.get("bottleneck"), "tw_sets_1ca": tw.get("sets_1ca", 0),
+            "tw_sub_parts": tw.get("sub_parts") or [], "tw_components": tw.get("components") or []}
 
 
-def _bottleneck_label(row):
-    """any-color 列 → 台灣卡在哪（單片 or 半成品；只有一片在用的半成品叫「SA 半成品」）。"""
-    b = row.get("bottleneck")
+def _bottleneck_label(v):
+    """台灣卡在哪（單片 or 半成品；只有一片在用的半成品叫「SA 半成品」）。"""
+    if v.get("tw_unconfirmable"):
+        return "缺料號 / no ERP: " + "、".join(v.get("missing_erp") or [])
+    b = v.get("bottleneck")
     if not b:
         return "-"
-    if row.get("tw_sets_1ca", 0) > 0 or not row.get("tw_sub_parts"):
-        c = next((x for x in row.get("tw_components") or [] if x["code"] == b), None)
+    if v.get("tw_sets_1ca", 0) > 0 or not v.get("tw_sub_parts"):
+        c = next((x for x in v.get("tw_components") or [] if x["code"] == b), None)
         return f"{b} 單片（剩 {c['qty']}）" if c else b
-    s = next((x for x in row["tw_sub_parts"] if x["erp"] == b), None)
+    s = next((x for x in v["tw_sub_parts"] if x["erp"] == b), None)
     if not s:
         return b
     users = [u["code"] for u in s.get("used_by") or []]
@@ -111,43 +123,102 @@ def _bottleneck_label(row):
     return f"{name}（剩 {s['qty']}）"
 
 
+def _us_cell(v, internal=True):
+    """美國可出那格：數字＋怎麼出（拆組直接寫 C3 套組＋DS 散片）。經銷商只給數字。"""
+    n = v.get("us_ship", 0)
+    how = v.get("us_ship_how")
+    if not internal or how in (None, "ready"):
+        return str(n)
+    if how == "split":
+        d = v["us_decomposed"]
+        ex = "＋".join(e["code"] for e in d["extra_pieces"])
+        return f"{n}（{d['via']['code']} 套組＋{ex} 散片）"
+    return f"{n}（散片湊 / loose）"
+
+
+def _summary_cells(v):
+    return {"美國可出 / US": _us_cell(v),
+            "台灣可組 / TW": ("無法確認 / N/A" if v.get("tw_unconfirmable") else str(v["in_process"])),
+            "卡在 / Bottleneck": _bottleneck_label(v)}
+
+
+_SUMMARY_NOTE = ("美國可出 = 美國現在能出的組數（現成套組、散片湊組、拆組取最多的那種）；台灣可組 = 只需包裝即可出貨"
+                 "（少量可隔天，量多約 3 天）。/ US = sets we can ship from US now (ready, loose or split-fill); "
+                 "TW = sets we assemble, packing only (next day ~ 3 days).")
+
+
+def _render_us_how(v):
+    """美國怎麼出：現成套組→各倉；拆組→子集套組＋散片各在哪倉；散片湊→各片在哪倉；都不行→缺哪片。"""
+    how = v.get("us_ship_how")
+    if how == "ready":
+        st.table([{"美國怎麼出 / US source": "現成套組 / ready set", "倉庫 / Warehouse": WH_NAME.get(x["warehouse"], x["warehouse"]),
+                   "組數 / Sets": str(x["qty"])} for x in v["us_set_stock"] if x["qty"] > 0])
+        return
+    if how == "split":
+        d = v["us_decomposed"]
+        rows = [{"美國怎麼出 / US source": f"現成 {d['via']['code']} 套組 / ready set", "每組需 / Per set": "1",
+                 "倉庫 / Warehouse": _wh_hint(d["via"]["stock"])}]
+        rows += [{"美國怎麼出 / US source": f"{e['code']} 散片 / loose", "每組需 / Per set": str(e["per_set"]),
+                  "倉庫 / Warehouse": _wh_hint(e["stock"])} for e in d["extra_pieces"]]
+        st.table(rows)
+        return
+    loose = {c["code"]: c for c in v.get("us_loose") or []}
+    if how == "loose":
+        st.table([{"美國怎麼出 / US source": f"{d['code']} 散片 / loose", "每組需 / Per set": str(d["count"]),
+                   "倉庫 / Warehouse": _wh_hint(loose[d["code"]]["stock"])} for d in v["decomposition"]])
+        return
+    short = [d["code"] for d in v["decomposition"]
+             if (loose[d["code"]]["total"] if d["code"] in loose else 0) < d["count"]]
+    have = "、".join(f"{c} 散片 {loose[c]['total']}" for c in loose)
+    st.caption("美國無現成套組，散片也湊不出整組" + (f"，缺 {'、'.join(short)}" if short else "")
+               + (f"（有 {have}）" if have else "") + " / Not available in US"
+               + (f" — short {', '.join(short)}" if short else "") + ".")
+
+
+def _render_tw_detail(v):
+    """台灣明細：無法確認的說明＋成品單片表＋（有的話）半成品表。"""
+    if v.get("tw_unconfirmable"):
+        m = "、".join(v.get("missing_erp") or [])
+        st.warning(f"單片 {m} 未建料號，台灣庫存查不到，所以可組數無法確認。/ "
+                   f"Piece(s) {m} have no ERP, so TW stock cannot be confirmed.")
+    st.table([_tw_comp_row(c) for c in v.get("tw_components") or []])
+    subs = v.get("tw_sub_parts") or []
+    if subs:
+        st.caption("半成品 / Sub-parts (2CA)：成品單片不夠時用這些組裝 / used when finished pieces are short")
+        st.table([{"半成品/Sub-part": s.get("desc") or "-", "料號/ERP": s["erp"],
+                   "每組需/Need per set": str(s["per_set"]), "庫存/Stock": str(s["qty"]),
+                   "安全/Safety": str(s["safety"])} for s in subs])
+
+
+def _render_single_internal(r):
+    v = _view_from_lookup(r)
+    st.table([_summary_cells(v)])
+    st.caption(_SUMMARY_NOTE)
+    _render_us_how(v)
+    with st.expander("台灣明細 / TW detail", expanded=False):
+        _render_tw_detail(v)
+
+
 def render_grid(data, internal):
-    """顏色總表：一眼看「美國能出幾組、台灣能組幾組、卡在哪」。美國數字＝現成/散片湊/拆組取最大（與單查一致）。"""
+    """顏色總表：跟單一顏色同一套欄位；下方每個顏色一個收合區塊，內容同單一顏色的明細。"""
     rows = []
     for r in data["rows"]:
-        how = r.get("us_ship_how")
-        us = str(r.get("us_ship", r["us_total"]))
-        if internal and how in _HOW_ZH:
-            us += f"（{_HOW_ZH[how]}）"
-        if r.get("tw_unconfirmable"):
-            tw = "無法確認 / N/A" if internal else "N/A"
-        else:
-            tw = str(r["in_process"])
         if internal:
-            rows.append({"顏色 / Color": f"{r['finish']} — {r['color']}",
-                         "美國可出 / US": us, "台灣可組 / TW": tw,
-                         "卡在 / Bottleneck": ("缺料號 " + "、".join(r.get("missing_erp") or [])
-                                              if r.get("tw_unconfirmable") else _bottleneck_label(r))})
+            rows.append({"顏色 / Color": f"{r['finish']} — {r['color']}", **_summary_cells(r)})
         else:
-            rows.append({"Color": f"{r['finish']} — {r['color']}", "Ready (US)": us, "In process": tw})
+            rows.append({"Color": f"{r['finish']} — {r['color']}", "Ready (US)": _us_cell(r, internal=False),
+                         "In process": ("N/A" if r.get("tw_unconfirmable") else str(r["in_process"]))})
     st.table(rows)
-    st.caption(("美國可出 = 美國現在能出的組數（含散片湊組、拆組，取最多的那種）；台灣可組 = 只需包裝即可出貨"
-                "（少量可隔天，量多約 3 天）。/ US = sets we can ship from US now (incl. loose / split-fill); "
-                "TW = sets we assemble, packing only (next day ~ 3 days)."
-                if internal else
-                "Ready (US) = sets ready to ship now. In process = additional sets we can produce, "
-                "lead time approx. 1–2 weeks."))
+    st.caption(_SUMMARY_NOTE if internal else
+               "Ready (US) = sets ready to ship now. In process = additional sets we can produce, "
+               "lead time approx. 1–2 weeks.")
     if internal:
-        with st.expander("明細 / Detail（各倉、單片庫存）", expanded=False):
-            for r in data["rows"]:
-                st.markdown(f"**{r['finish']} — {r['color']}**")
-                wh = "、".join(f"{WH_NAME.get(w, w)} {q}" for w, q in r["us_by_wh"].items() if q > 0)
-                loose = r.get("us_loose") or []
-                st.caption("美國現成套組 / US ready: " + (wh or "0")
-                           + ("　｜　散片 / loose: " + "；".join(
-                               f"{c['code']} " + ", ".join(f"{WH_NAME.get(w['warehouse'], w['warehouse'])} {w['qty']}"
-                                                          for w in c["stock"]) for c in loose) if loose else ""))
-                st.table([_tw_comp_row(c) for c in r.get("tw_components") or []])
+        for r in data["rows"]:
+            with st.expander(f"{r['finish']} — {r['color']}  ·  美國 {_us_cell(r)}｜台灣 "
+                             + ("無法確認" if r.get("tw_unconfirmable") else str(r["in_process"])), expanded=False):
+                _render_us_how(r)
+                st.markdown("**台灣明細 / TW detail**")
+                _render_tw_detail(r)
 
 
 def _wh_hint(stock):
@@ -228,6 +299,10 @@ def render_headline(r, internal):
 def render_single(r, internal):
     s = r["set"]
     st.markdown(f"**{s.get('name', r['model'])}**" + (f"  ·  SKU `{s.get('sku','-')}`" if internal else ""))
+    if internal and not r["tw"].get("is_accessory") and not r["tw"].get("is_shim"):
+        _render_single_internal(r)   # 內部：與 any-color 同一套版面（摘要表→美國怎麼出→台灣明細）
+        render_alts(r, internal)
+        return
     render_headline(r, internal)
     acc = r["tw"].get("is_accessory")
     shim = r["tw"].get("is_shim")
