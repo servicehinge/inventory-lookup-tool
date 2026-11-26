@@ -36,8 +36,8 @@ uvicorn api:app --port 7860                # API（需 requirements-api.txt）
 - **網頁**：push 到 `servicehinge/inventory-lookup-tool` 的 `main` 會自動重部署。看不到新版時，用 GitHub `servicehinge` 登入 share.streamlit.io → app 的 ⋮ → **Reboot app**，再到網頁按 `Cmd + Shift + R`。Secrets 範本見 `.streamlit/secrets.toml.example`。
 - **API**：把 `api.py`、`inventory_core.py`、`us_inventory.py` 複製到 `../api-hf-space/`，在那個資料夾執行 `gcloud run deploy`（完整指令見 `ARCHITECTURE.md` §7.2，**cd 和 deploy 要寫在同一行**）。
 
-## ⚠️ 改程式前
-`app.py`、`inventory_core.py` 的工作區混著還沒 commit 的「生管」功能。commit 要用外科手術式，只推這次的修改。流程見 `ARCHITECTURE.md` §7.4。
+## 改程式前
+先讀 `ARCHITECTURE.md`（尤其 §5 業務規則）。工作區保持乾淨，改完直接 commit／push。
 
 ## 檔案
 - `inventory_core.py` — 引擎：`lookup()`、`us_ship()`、`lookup_all_colors()`、`color_alternatives()`（含 CLI）。

@@ -19,7 +19,7 @@
 ### 使用者與入口
 | 入口 | 給誰 | 技術 | 網址 / 位置 |
 |---|---|---|---|
-| 網頁 | 內部業務、生管、經銷商 | Streamlit（Streamlit Community Cloud） | https://inventory-lookup-tool-nfvszxrhdk23dmjgrj4sbd.streamlit.app/ |
+| 網頁 | 內部業務、經銷商 | Streamlit（Streamlit Community Cloud） | https://inventory-lookup-tool-nfvszxrhdk23dmjgrj4sbd.streamlit.app/ |
 | JSON API | LINE bot、Grok Bot 等程式 | FastAPI（Google Cloud Run） | https://waterson-inventory-api-i3wpftru7q-uc.a.run.app |
 | LINE | 內部同仁手機即時查 | GAS webhook → 呼叫上面的 API | repo `order-review-line` 的 `line-webhook-gas/Code.gs` |
 
@@ -244,9 +244,9 @@ cd "<專案絕對路徑>/api-hf-space" && pwd && \
 - GAS `doPost` 把 K51/W41 型號交給 `apiLookup_`，打 `<INV_API_URL>/lookup?model=&key=<INV_API_KEY>`，回傳 `text`。連不上 API 時退回 GAS 原生查表，LINE 不會沒回應。
 - GAS 改了要 `clasp push` ＋ `clasp deploy --deploymentId <正式 id>`。
 
-### 7.4 改程式的流程（重要）
-- `app.py`、`inventory_core.py` 的工作區長期混著**還沒 commit 的「生管」功能**（`render_plan`、`explode_*`、`PLANNER_PASSWORD`、三角色）。正式版只有內部／經銷商兩種身分。
-- 所以 commit 要用「外科手術式」：備份完整檔 → 從 `git show HEAD:` 取正式版 → 只套用這次的修改 → commit／push → 把備份還原回工作區。commit 前用 `grep -c "render_plan\|explode_"` 確認是 0。
+### 7.4 改程式的流程
+- 工作區應保持乾淨（`git status` 沒有未 commit 的東西），改完直接 commit／push 即可。正式版只有內部／經銷商兩種身分。
+- 2026-11-26 已刪除未上線的「生管需求估算」草稿（`render_plan`、`explode_*`、`PLANNER_PASSWORD`）。之後要做會重新規劃，不要從舊程式撿回來。
 - 改完 `api.py`、`inventory_core.py`、`us_inventory.py` 要同步複製到 `api-hf-space/` 並重新部署 Cloud Run；只改 `app.py` 則不用。
 
 ### 7.5 本機測試
@@ -264,7 +264,7 @@ streamlit run app.py                              # 網頁
 
 ## 8. 已知限制與待辦
 - 美國拆組只做「一個較小的現成套組＋散片」，不做多個套組組合。
-- 生管功能（多型號×套數 → 單片與小零件需求、台灣缺口）已寫好但未上線，等「小零件 → AU1 料號」對照表。
+- `order_enrich.py`、`customer_bg.py`（訂單信 → 附庫存與客戶背景的通知文字）只能手動跑 CLI，沒有接任何自動流程；正式的「訂單通知附庫存」是 stripe-notice 的 GAS `StockEnrich.gs`。
 - 美國散片列不是每個 SKU 都有，沒有列就當 0。
 - 台灣數字只跟得上工廠上傳的頻率（每天一次）。
 - 經銷商頁面仍是舊版面（大數字＋橫幅），尚未改成表格版。
