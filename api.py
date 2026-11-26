@@ -86,8 +86,11 @@ def _us_reason(r):
         comps = {c["code"]: c["total"] for c in us.get("components") or []}
         short = "、".join(d["code"] for d in r["decomposition"] if comps.get(d["code"], 0) < d["count"])
         have = "、".join(f"{d['code']} 散片 {comps[d['code']]}" for d in r["decomposition"] if comps.get(d["code"], 0) > 0)
-        return ["美國 US：0 組/sets"] + ([f"  缺/short {short}" + (f"（{have}）" if have else "")] if short else [])
-    out = [f"美國 US：{ship} 組/sets（{_HOW[how]}）"]
+        code = r["model"].split("-")[2] if len(r["model"].split("-")) > 2 else "套組"
+        return ["美國 US：0 組/sets（現成 " + code + " 套組 0 / no ready " + code + " set）"] + ([f"  缺/short {short}" + (f"（{have}）" if have else "")] if short else [])
+    code = r["model"].split("-")[2] if len(r["model"].split("-")) > 2 else "套組"
+    out = [f"美國 US：{ship} 組/sets（{_HOW[how]}）",
+           f"  現成 {code} 套組 0 / no ready {code} set"]
     if how == "split":
         dec = us["decomposed"]
         ex = "＋".join(e["code"] for e in dec["extra_pieces"])

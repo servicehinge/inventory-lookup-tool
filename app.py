@@ -97,7 +97,8 @@ def _tw_comp_row(c):
 def _view_from_lookup(r):
     ship, how = ic.us_ship(r)
     tw = r["tw"]
-    return {"us_ship": ship, "us_ship_how": how, "us_set_stock": r["us"]["set_stock"],
+    return {"model": r["model"], "us_total": r["us"]["set_total"],
+            "us_ship": ship, "us_ship_how": how, "us_set_stock": r["us"]["set_stock"],
             "us_decomposed": r["us"].get("decomposed"), "us_loose": r["us"].get("components") or [],
             "decomposition": r["decomposition"], "in_process": tw["assemblable_sets"],
             "tw_unconfirmable": bool(tw.get("unconfirmable")), "missing_erp": tw.get("missing_erp") or [],
@@ -136,8 +137,16 @@ def _us_cell(v, internal=True):
     return f"{n}（散片湊 / loose）"
 
 
+def _set_code(v):
+    """型號第三段＝套組碼（K51M-450-C4-US19 → C4）。"""
+    parts = (v.get("model") or "").split("-")
+    return parts[2] if len(parts) > 2 else "套組"
+
+
 def _summary_cells(v):
-    return {"美國可出 / US": _us_cell(v),
+    code = _set_code(v)
+    return {f"美國現成 {code} / US ready {code}": str(v.get("us_total", 0)),
+            "美國可出 / US can ship": _us_cell(v),
             "台灣可組 / TW": ("無法確認 / N/A" if v.get("tw_unconfirmable") else str(v["in_process"])),
             "卡在 / Bottleneck": _bottleneck_label(v)}
 
@@ -156,6 +165,8 @@ def _render_us_how(v):
         return
     if how == "split":
         d = v["us_decomposed"]
+        st.caption(f"{_set_code(v)} 完整套組美國 0 組，改用現成 {d['via']['code']} 套組＋散片在美國湊成整組 / "
+                   f"no complete {_set_code(v)} set in US — combine a ready {d['via']['code']} set with loose pieces.")
         rows = [{"美國怎麼出 / US source": f"現成 {d['via']['code']} 套組 / ready set", "每組需 / Per set": "1",
                  "倉庫 / Warehouse": _wh_hint(d["via"]["stock"])}]
         rows += [{"美國怎麼出 / US source": f"{e['code']} 散片 / loose", "每組需 / Per set": str(e["per_set"]),
@@ -164,13 +175,14 @@ def _render_us_how(v):
         return
     loose = {c["code"]: c for c in v.get("us_loose") or []}
     if how == "loose":
+        st.caption(f"{_set_code(v)} 完整套組美國 0 組，全用散片湊 / no complete {_set_code(v)} set in US — all from loose pieces.")
         st.table([{"美國怎麼出 / US source": f"{d['code']} 散片 / loose", "每組需 / Per set": str(d["count"]),
                    "倉庫 / Warehouse": _wh_hint(loose[d["code"]]["stock"])} for d in v["decomposition"]])
         return
     short = [d["code"] for d in v["decomposition"]
              if (loose[d["code"]]["total"] if d["code"] in loose else 0) < d["count"]]
     have = "、".join(f"{c} 散片 {loose[c]['total']}" for c in loose)
-    st.caption("美國無現成套組，散片也湊不出整組" + (f"，缺 {'、'.join(short)}" if short else "")
+    st.caption(f"美國無現成 {_set_code(v)} 套組，散片也湊不出整組" + (f"，缺 {'、'.join(short)}" if short else "")
                + (f"（有 {have}）" if have else "") + " / Not available in US"
                + (f" — short {', '.join(short)}" if short else "") + ".")
 
@@ -214,7 +226,7 @@ def render_grid(data, internal):
                "lead time approx. 1–2 weeks.")
     if internal:
         for r in data["rows"]:
-            with st.expander(f"{r['finish']} — {r['color']}  ·  美國 {_us_cell(r)}｜台灣 "
+            with st.expander(f"{r['finish']} — {r['color']}  ·  現成 {r['us_total']}｜美國可出 {_us_cell(r)}｜台灣 "
                              + ("無法確認" if r.get("tw_unconfirmable") else str(r["in_process"])), expanded=False):
                 _render_us_how(r)
                 st.markdown("**台灣明細 / TW detail**")
