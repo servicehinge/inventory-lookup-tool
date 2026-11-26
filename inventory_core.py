@@ -651,11 +651,14 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
 
     # ── 第二層：1CA 不足時，用 2CA 半成品「補組」。共用件（如背板 SA/SA1 都用）以整套需求
     #    彙總扣料，避免各單片獨立計算重複計背板而超賣。一整套的 2CA 需求 = Σ(單片用量×該片在套組數量)。──
-    set_demand, sub_desc = {}, {}
+    set_demand, sub_desc, used_by = {}, {}, {}
     for c in bom["components"]:
         for sp in c.get("sub_parts", []):
             set_demand[sp["erp"]] = set_demand.get(sp["erp"], 0) + sp["qty"] * c["count"]
             sub_desc.setdefault(sp["erp"], sp["desc"])
+            # 記錄這個 2CA 是哪片單片在用（每片用幾個 × 套組裡幾片），讓輸出講清楚「卡在哪片」
+            used_by.setdefault(sp["erp"], []).append(
+                {"code": c["code"], "pieces": c["count"], "per_piece": sp["qty"]})
     sub_parts, sets_from_sub, sub_bottleneck = [], None, None
     for erp, per_set in set_demand.items():
         rec = tw_db.get(erp)
@@ -667,7 +670,8 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
             sets_from_sub, sub_bottleneck = cap, erp
         sub_parts.append({"erp": erp, "desc": sub_desc.get(erp, ""), "name": rec["name"] if rec else None,
                           "qty": qty, "safety": safety, "per_set": per_set,
-                          "below_safety": below, "in_table": bool(rec)})
+                          "below_safety": below, "in_table": bool(rec),
+                          "used_by": used_by.get(erp, [])})
         if below:
             low.append(f"半成品·{sub_desc.get(erp, erp)}")
     sets_from_sub = sets_from_sub or 0

@@ -70,6 +70,68 @@ def _check(key):
 
 
 # ---------------- LINE 文字排版（單一來源，內部中英並列）----------------
+def _us_loose_lines(r):
+    """美國無現成套組時：列每個單片的美國散片庫存，並算「全用散片」可湊幾組、缺哪片。"""
+    comps = {c["code"]: c for c in r["us"].get("components") or []}
+    parts, caps = [], []
+    for d in r["decomposition"]:
+        c = comps.get(d["code"])
+        total = c["total"] if c else 0
+        wh = "、".join(f"{s['warehouse']} {s['qty']}" for s in (c["stock"] if c else []) if s["qty"] > 0)
+        parts.append(f"{d['code']} {total}" + (f"（{wh}）" if wh else ""))
+        caps.append((total // d["count"] if d["count"] else 0, d["code"]))
+    if not parts:
+        return []
+    out = ["  散片/loose pieces（每組需/per set: "
+           + ", ".join(f"{d['code']}×{d['count']}" for d in r["decomposition"]) + "）: " + ", ".join(parts)]
+    sets = min(c for c, _ in caps)
+    if sets > 0:
+        out.append(f"  → 散片可湊/can build from loose: {sets} 組/sets")
+    else:
+        short = "、".join(code for c, code in caps if c == 0)
+        out.append(f"  → 散片湊不出整組，缺/short: {short}")
+    return out
+
+
+def _tw_detail_lines(r):
+    """台灣可組數的明細：成品單片、半成品逐項，並明講卡在哪個料（哪片單片用的）。"""
+    tw = r["tw"]
+    comps = tw.get("components") or []
+    subs = tw.get("sub_parts") or []
+    out = []
+    if comps:
+        caps = [(c["qty"] // c["need"] if c["need"] else 0) for c in comps]
+        out.append("  成品單片/finished pieces: "
+                   + ", ".join(f"{c['code']} {c['qty']}（每組需/per set {c['need']}）" for c in comps)
+                   + f" → {min(caps)} 組/sets")
+    if not subs:
+        b = next((c for c in comps if c["code"] == tw.get("bottleneck")), None)
+        if b:
+            out.append(f"  卡在/Bottleneck: {b['code']} 單片/piece（庫存/stock {b['qty']}，每組需/per set {b['need']}）")
+        return out
+
+    out.append(f"  半成品補組/from sub-parts: {tw.get('sets_from_sub', 0)} 組/sets")
+    rows = []
+    for s in subs:
+        cap = s["qty"] // s["per_set"] if s["per_set"] else 0
+        users = "、".join(f"{u['code']} 每片{u['per_piece']}個×{u['pieces']}片" for u in s.get("used_by") or [])
+        rows.append((cap, s, users))
+    low = min(c for c, _, _ in rows)
+    for cap, s, users in rows:
+        mark = "  ← 瓶頸/bottleneck" if cap == low else ""
+        use = f"，{users}" if users else ""
+        out.append(f"    {s['desc'] or s['erp']} {s['erp']}: 庫存/stock {s['qty']}，"
+                   f"每組需/per set {s['per_set']}{use} → {cap} 組/sets{mark}")
+    for cap, s, _ in rows:
+        if cap != low:
+            continue
+        who = "、".join(u["code"] for u in s.get("used_by") or [])
+        out.append(f"  卡在/Bottleneck: {s['desc'] or s['erp']}"
+                   + (f"（{who} 用 / used by {who}）" if who else "")
+                   + f"，庫存/stock {s['qty']}，每組需/per set {s['per_set']}")
+    return out
+
+
 def fmt_single(r):
     m = r["model"]
     if not r["found"]:
@@ -80,31 +142,31 @@ def fmt_single(r):
         lines.append(f"拆解/BOM: {bom}")
 
     us = r["us"]
+    lines.append("")
     if us["set_stock"] and us["set_total"] > 0:
         wh = ", ".join(f"{s['warehouse']} {s['qty']}" for s in us["set_stock"] if s["qty"] > 0)
         lines.append(f"美國/US: {wh}（合計/total {us['set_total']} sets）")
     else:
-        lines.append("美國/US: 無現貨 / none ready")
+        lines.append("美國/US: 無現成套組 / no ready sets")
+        lines.extend(_us_loose_lines(r))
         dec = us.get("decomposed")
         if dec:
             via = dec["via"]
             ex = "＋".join(e["code"] for e in dec["extra_pieces"])
-            lines.append(f"美國可拆組/US split-fill: {dec['sets']} sets"
+            lines.append(f"  美國可拆組/US split-fill: {dec['sets']} sets"
                          f"（{via['code']}套組＋散片{ex} / ready {via['code']} + loose {ex}）")
+            lines.append("  ※ 散片湊組與拆組共用同批散片，擇一、不可相加 / pick one, do not add up")
 
     tw = r["tw"]
+    lines.append("")
     if tw.get("unconfirmable"):
         miss = "、".join(tw.get("missing_erp") or [])
-        tw_line = f"台灣製程中/In process: 無法確認/unconfirmable（單片 {miss} 未建料號/missing ERP）"
+        lines.append(f"台灣製程中/In process: 無法確認/unconfirmable（單片 {miss} 未建料號/missing ERP）")
     else:
-        tw_line = f"台灣製程中/In process: {tw['assemblable_sets']} 組/sets"
-        if tw.get("bottleneck"):
-            tw_line += f"（瓶頸/bottleneck {tw['bottleneck']}）"
-    lines.append(tw_line)
+        lines.append(f"台灣製程中/In process: {tw['assemblable_sets']} 組/sets")
+        lines.extend(_tw_detail_lines(r))
     if tw.get("note"):
         lines.append(f"  ※ {tw['note']}")
-    if tw.get("low_stock"):
-        lines.append("  ⚠ 低於安全存量/below safety: " + ", ".join(tw["low_stock"]))
 
     ua = us.get("alt_colors") or []
     ta = tw.get("alt_colors") or []
