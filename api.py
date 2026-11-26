@@ -79,29 +79,21 @@ def _check(key):
 
 
 def _us_reason(r):
-    """美國無現成套組時的原因行：散片能湊就講幾組，不能就講缺哪片（附有貨的散片數）。"""
-    comps = {c["code"]: c for c in r["us"].get("components") or []}
-    caps, have = [], []
-    for d in r["decomposition"]:
-        total = comps[d["code"]]["total"] if d["code"] in comps else 0
-        caps.append((total // d["count"] if d["count"] else 0, d["code"]))
-        if total > 0:
-            have.append(f"{d['code']} 散片 {total}")
-    if not caps:
-        return []
-    out = []
-    loose = min(c for c, _ in caps)
-    if loose > 0:
-        out.append(f"  散片可湊/from loose pieces：{loose} 組/sets")
-    else:
-        short = "、".join(code for c, code in caps if c == 0)
-        out.append(f"  缺/short {short}" + (f"（{'、'.join(have)}）" if have else ""))
-    dec = r["us"].get("decomposed")
-    if dec:
+    """美國無現成套組時：標題給「實際可出」組數＋方式，下一行講怎麼湊；湊不出就講缺哪片。"""
+    ship, how = ic.us_ship(r)
+    us = r["us"]
+    if how is None:
+        comps = {c["code"]: c["total"] for c in us.get("components") or []}
+        short = "、".join(d["code"] for d in r["decomposition"] if comps.get(d["code"], 0) < d["count"])
+        have = "、".join(f"{d['code']} 散片 {comps[d['code']]}" for d in r["decomposition"] if comps.get(d["code"], 0) > 0)
+        return ["美國 US：0 組/sets"] + ([f"  缺/short {short}" + (f"（{have}）" if have else "")] if short else [])
+    out = [f"美國 US：{ship} 組/sets（{_HOW[how]}）"]
+    if how == "split":
+        dec = us["decomposed"]
         ex = "＋".join(e["code"] for e in dec["extra_pieces"])
-        out.append(f"  拆組/split-fill：{dec['sets']} 組/sets（{dec['via']['code']} 套組＋{ex} 散片）")
-        if loose > 0:
-            out.append("  ※ 兩種湊法共用散片，擇一 / pick one, do not add up")
+        out.append(f"  用現成 {dec['via']['code']} 套組＋{ex} 散片 / ready {dec['via']['code']} + loose {ex}")
+    else:
+        out.append("  全用散片湊 / all from loose pieces")
     return out
 
 
@@ -124,7 +116,24 @@ def _tw_reason(r):
             f"  剩 {qty}，每組需 {need} / {qty} left, {need} per set"]
 
 
-def fmt_single(r):
+_HOW = {"ready": "現成/ready", "loose": "散片湊/loose", "split": "拆組/split-fill"}
+
+
+def _alt_lines(r, alts, limit=4):
+    """版型 A 的替代建議：316 先給同色 304，其餘列有貨顏色（美國可出｜台灣可組）。"""
+    m = r["model"]
+    head = ("⚠ 316 美國無貨，可改 304 / 316 not in US — 304 options:" if m.endswith("-316")
+            else "⚠ 此色美國無貨，其他顏色 / not in US — other finishes:")
+    out = [head]
+    for a in alts[:limit]:
+        tag = "304 同色/same color" if a["same_color_304"] else f"{a['finish']}（{a['color']}）"
+        us = f"美國 US {a['us_ship']} 組" + (f"（{_HOW[a['us_ship_how']]}）"
+                                            if a["us_ship_how"] and a["us_ship_how"] != "ready" else "")
+        out.append(f"  {tag}：{us}｜台灣 TW {a['tw_sets']} 組")
+    return out
+
+
+def fmt_single(r, alts=None):
     m = r["model"]
     if not r["found"]:
         return f"{m}\n查無此型號 / not found"
@@ -139,7 +148,6 @@ def fmt_single(r):
         wh = "、".join(f"{s['warehouse']} {s['qty']}" for s in us["set_stock"] if s["qty"] > 0)
         lines.append(f"美國 US：{us['set_total']} 組/sets（{wh}）")
     else:
-        lines.append("美國 US：0 組/sets")
         lines.extend(_us_reason(r))
 
     tw = r["tw"]
@@ -154,30 +162,21 @@ def fmt_single(r):
     if tw.get("note"):
         lines.append(f"  ※ {tw['note']}")
 
-    ua = us.get("alt_colors") or []
-    ta = tw.get("alt_colors") or []
-    if ua or ta:
-        oos = us["set_total"] == 0 and (tw.get("unconfirmable") or tw["assemblable_sets"] == 0)
+    if alts:
         lines.append("")
-        lines.append("⚠ 此色無貨，其他可選顏色 / Out of stock — other finishes:"
-                     if oos else "其他顏色 / Other finishes:")
-        for a in ua:
-            lines.append(f"  現貨/US {a['color_name']}({a['color']}): {a['total']} sets")
-        for a in ta:
-            lines.append(f"  製程/In-proc {a['color_name']}({a['color']}): {a['sets']} sets")
+        lines.extend(_alt_lines(r, alts))
     return "\n".join(lines)
 
 
 def fmt_grid(data):
     if not data["found"]:
         return f"{data['base']}\n查無變體 / no variants"
-    lines = [f"{data['base']} — 各顏色 / by finish"]
+    lines = [f"{data['base']} — 各顏色 / by finish（美國可出｜台灣可組）"]
     for r in data["rows"]:
-        ip_disp = "無法確認/NA" if r.get("tw_unconfirmable") else r["in_process"]
-        seg = f"{r['finish']} {r['color']}: 美國/US {r['us_total']}、製程/In-proc {ip_disp}"
-        if r.get("tw_low"):
-            seg += " ⚠"
-        lines.append(seg)
+        ip_disp = "無法確認/NA" if r.get("tw_unconfirmable") else f"{r['in_process']} 組"
+        how = r.get("us_ship_how")
+        us = f"{r.get('us_ship', r['us_total'])} 組" + (f"（{_HOW[how]}）" if how and how != "ready" else "")
+        lines.append(f"{r['finish']}（{r['color']}）：美國 US {us}｜台灣 TW {ip_disp}")
     return "\n".join(lines)
 
 
@@ -194,7 +193,14 @@ def lookup(model: str, key: str = "", role: str = "internal"):
     us, tw, tw_sw = _get_dbs()
     cat = _get_catalog(ic.family_of(model))
     r = ic.lookup(model, catalog=cat, us_db=us, tw_db=tw, tw_sw_db=tw_sw)
-    return JSONResponse({"ok": True, "found": r["found"], "text": fmt_single(r), "data": r})
+    alts = []
+    if r["found"] and ic.us_ship(r)[0] == 0 and not r["tw"].get("is_accessory") and not r["tw"].get("is_shim"):
+        try:
+            alts = ic.color_alternatives(model, catalog=cat, us_db=us, tw_db=tw, tw_sw_db=tw_sw)
+        except Exception:
+            alts = []   # 替代建議失敗不影響主結果
+    return JSONResponse({"ok": True, "found": r["found"], "text": fmt_single(r, alts),
+                         "data": r, "alternatives": alts})
 
 
 @app.get("/colors")

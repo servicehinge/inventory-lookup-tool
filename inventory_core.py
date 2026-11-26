@@ -578,6 +578,8 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
     result["us"]["decomposed"] = (
         _us_decompose(model, result["decomposition"], catalog, us_db)
         if result["us"]["set_total"] <= 0 else None)
+    # 全用美國散片能湊幾組（每片 total÷每組需，取最小；有片缺貨＝0）
+    result["us"]["loose_sets"] = _us_loose_sets(result["decomposition"], comp_us)
 
     sw = is_swing_clear(model)
     color = finish_color(set_name) or finish_color(model)
@@ -702,6 +704,22 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
 
 
 # ---------- 任何顏色：顏色 × 倉庫 矩陣 ----------
+def _us_loose_sets(decomposition, comp_us):
+    have = {c["code"]: c["total"] for c in comp_us or []}
+    caps = [have.get(d["code"], 0) // d["count"] for d in decomposition or [] if d.get("count")]
+    return min(caps) if caps else 0
+
+
+def us_ship(r):
+    """美國實際可出組數＝max(現成套組, 全散片湊, 子集套組＋散片拆組)。三種共用散片，取最大、不相加。
+    回 (組數, 方式)：方式 ready / loose / split / None。"""
+    us = r.get("us") or {}
+    opts = [(us.get("set_total") or 0, "ready"), (us.get("loose_sets") or 0, "loose"),
+            (((us.get("decomposed") or {}).get("sets")) or 0, "split")]
+    n, how = max(opts, key=lambda x: x[0])
+    return (n, how) if n > 0 else (0, None)
+
+
 def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
     base = normalize_model(base)
     catalog = catalog or HubSpotCatalog(family_of(base))
@@ -717,18 +735,24 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
         if not r["found"]:
             continue
         us_by_wh = {x["warehouse"]: x["qty"] for x in r["us"]["set_stock"]}
+        ship, how = us_ship(r)
         rows.append({
             "finish": v["finish"], "color": v.get("color", v["finish"]), "model": v["model"],
             "us_by_wh": us_by_wh, "us_total": r["us"]["set_total"],
+            "us_ship": ship, "us_ship_how": how,
+            "us_loose_sets": r["us"].get("loose_sets") or 0,
+            "us_split": ((r["us"].get("decomposed") or {}).get("sets")) or 0,
             "in_process": r["tw"]["assemblable_sets"], "tw_low": bool(r["tw"]["low_stock"]),
             "tw_unconfirmable": bool(r["tw"].get("unconfirmable")),
             "missing_erp": r["tw"].get("missing_erp") or [],
             "bottleneck": r["tw"]["bottleneck"],
             "tw_components": r["tw"]["components"],   # 每色的 SA/SA1 料號+台灣庫存
+            "tw_sub_parts": r["tw"].get("sub_parts") or [],
+            "tw_sets_1ca": r["tw"].get("sets_1ca", 0),
             "us_loose": r["us"]["components"],         # 美國零散零件
         })
-    # 排序：美國現成多的在前，其次製程中多的（無法確認的 in_process=None 視為 -1 排最後）
-    rows.sort(key=lambda x: (x["us_total"], x["in_process"] if x["in_process"] is not None else -1),
+    # 排序：美國可出（含散片/拆組）多的在前，其次台灣可組多的（無法確認的 in_process=None 視為 -1 排最後）
+    rows.sort(key=lambda x: (x["us_ship"], x["in_process"] if x["in_process"] is not None else -1),
               reverse=True)
     # 有貨的倉（任一顏色 >0）才當欄位
     whs = set()
@@ -737,6 +761,29 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
             if q > 0:
                 whs.add(w)
     return {"base": base, "found": bool(rows), "rows": rows, "warehouses": sorted(whs)}
+
+
+def color_alternatives(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
+    """查的型號沒貨時的替代建議：同套組其他顏色（304 方角純色）＋ 316 時的「同色 304」。
+    回 [{finish, color, model, us_ship, us_ship_how, tw_sets, same_color_304}]，只含有貨者；
+    同色 304 排最前，其餘依美國可出、台灣可組排序。"""
+    m = normalize_model(model)
+    base = "-".join(m.split("-")[:3])
+    is_316 = m.endswith("-316")
+    color = finish_color(m)
+    grid = lookup_all_colors(base, catalog=catalog, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
+    out = []
+    for r in grid["rows"]:
+        if normalize_model(r["model"]) == m:
+            continue
+        tw_sets = r["in_process"] or 0
+        if r["us_ship"] <= 0 and tw_sets <= 0:
+            continue
+        out.append({"finish": r["finish"], "color": r["color"], "model": r["model"],
+                    "us_ship": r["us_ship"], "us_ship_how": r["us_ship_how"], "tw_sets": tw_sets,
+                    "same_color_304": bool(is_316 and r["finish"] == color)})
+    out.sort(key=lambda a: (a["same_color_304"], a["us_ship"], a["tw_sets"]), reverse=True)
+    return out
 
 
 if __name__ == "__main__":

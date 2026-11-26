@@ -92,48 +92,62 @@ def _tw_comp_row(c):
             "⚠": ("缺料號 / missing" if unv else ("低 / Low" if c["below_safety"] else ""))}
 
 
+_HOW_ZH = {"loose": "散片湊 / loose", "split": "拆組 / split-fill"}
+
+
+def _bottleneck_label(row):
+    """any-color 列 → 台灣卡在哪（單片 or 半成品；只有一片在用的半成品叫「SA 半成品」）。"""
+    b = row.get("bottleneck")
+    if not b:
+        return "-"
+    if row.get("tw_sets_1ca", 0) > 0 or not row.get("tw_sub_parts"):
+        c = next((x for x in row.get("tw_components") or [] if x["code"] == b), None)
+        return f"{b} 單片（剩 {c['qty']}）" if c else b
+    s = next((x for x in row["tw_sub_parts"] if x["erp"] == b), None)
+    if not s:
+        return b
+    users = [u["code"] for u in s.get("used_by") or []]
+    name = f"{users[0]} 半成品" if len(users) == 1 else (s.get("desc") or b)
+    return f"{name}（剩 {s['qty']}）"
+
+
 def render_grid(data, internal):
-    whs = order_whs(data["warehouses"])
-    ip_col = "製程中 / In process" if internal else "In process"
+    """顏色總表：一眼看「美國能出幾組、台灣能組幾組、卡在哪」。美國數字＝現成/散片湊/拆組取最大（與單查一致）。"""
     rows = []
     for r in data["rows"]:
-        row = {("顏色 / Color" if internal else "Color"): f"{r['finish']} — {r['color']}"}
-        for w in whs:
-            row[WH_NAME.get(w, w)] = r["us_by_wh"].get(w, 0)
+        how = r.get("us_ship_how")
+        us = str(r.get("us_ship", r["us_total"]))
+        if internal and how in _HOW_ZH:
+            us += f"（{_HOW_ZH[how]}）"
         if r.get("tw_unconfirmable"):
-            row[ip_col] = ("無法確認/N/A（缺料號）" if internal else "N/A")
+            tw = "無法確認 / N/A" if internal else "N/A"
         else:
-            row[ip_col] = (str(r["in_process"]) + (" ⚠" if internal and r["tw_low"] else "")) if internal else r["in_process"]
-        rows.append(row)
+            tw = str(r["in_process"])
+        if internal:
+            rows.append({"顏色 / Color": f"{r['finish']} — {r['color']}",
+                         "美國可出 / US": us, "台灣可組 / TW": tw,
+                         "卡在 / Bottleneck": ("缺料號 " + "、".join(r.get("missing_erp") or [])
+                                              if r.get("tw_unconfirmable") else _bottleneck_label(r))})
+        else:
+            rows.append({"Color": f"{r['finish']} — {r['color']}", "Ready (US)": us, "In process": tw})
     st.table(rows)
-    st.caption(("各倉數字 = 馬上可出的成品組數；製程中 = 可再生產的組數，只需包裝即可出貨（少量可隔天，量多約 3 天）。"
-                " / Warehouse columns = finished sets ready now. In process = sets we assemble "
-                "(packing only — small qty next day, larger ~3 days)."
+    st.caption(("美國可出 = 美國現在能出的組數（含散片湊組、拆組，取最多的那種）；台灣可組 = 只需包裝即可出貨"
+                "（少量可隔天，量多約 3 天）。/ US = sets we can ship from US now (incl. loose / split-fill); "
+                "TW = sets we assemble, packing only (next day ~ 3 days)."
                 if internal else
-                "Warehouse numbers = finished sets ready to ship now. "
-                "In process = additional sets we can produce, lead time approx. 1–2 weeks."))
+                "Ready (US) = sets ready to ship now. In process = additional sets we can produce, "
+                "lead time approx. 1–2 weeks."))
     if internal:
-        st.markdown("**料號明細 / Component detail（台灣零件庫存）**")
-        for r in data["rows"]:
-            comps = r.get("tw_components") or []
-            mark = " ⚠" if r["tw_low"] else ""
-            if r.get("tw_unconfirmable"):
-                head_qty = "無法確認 / cannot confirm（缺料號 / missing ERP: " + "、".join(r.get("missing_erp") or []) + "）"
-            else:
-                head_qty = f"可組 {r['in_process']} 組（瓶頸 {r.get('bottleneck') or '-'}）"
-            with st.expander(f"{r['finish']} — {r['color']}  ·  {head_qty}{mark}", expanded=True):
-                if r.get("tw_unconfirmable"):
-                    _miss = "、".join(r.get("missing_erp") or [])
-                    st.warning(f"單片 {_miss} 未建料號，台灣庫存查不到；出貨需全部單片齊備，故此顏色可組數無法確認。\n\n"
-                               f"Piece(s) {_miss} have no ERP, so TW stock can't be checked; all pieces are required "
-                               f"to ship, so the assemblable quantity for this finish cannot be confirmed.")
-                st.table([_tw_comp_row(c) for c in comps])
+        with st.expander("明細 / Detail（各倉、單片庫存）", expanded=False):
+            for r in data["rows"]:
+                st.markdown(f"**{r['finish']} — {r['color']}**")
+                wh = "、".join(f"{WH_NAME.get(w, w)} {q}" for w, q in r["us_by_wh"].items() if q > 0)
                 loose = r.get("us_loose") or []
-                if loose:
-                    st.caption("美國零散零件 / US loose: " +
-                               "；".join(f"{c['code']} " +
-                                        ", ".join(f"{WH_NAME.get(w['warehouse'], w['warehouse'])} {w['qty']}"
-                                                  for w in c["stock"]) for c in loose))
+                st.caption("美國現成套組 / US ready: " + (wh or "0")
+                           + ("　｜　散片 / loose: " + "；".join(
+                               f"{c['code']} " + ", ".join(f"{WH_NAME.get(w['warehouse'], w['warehouse'])} {w['qty']}"
+                                                          for w in c["stock"]) for c in loose) if loose else ""))
+                st.table([_tw_comp_row(c) for c in r.get("tw_components") or []])
 
 
 def _wh_hint(stock):
@@ -329,42 +343,25 @@ def render_single(r, internal):
 
 
 def render_alts(r, internal):
-    """缺色提示：列出其他「有貨」顏色，讓業務能提替代方案。只列出有庫存的顏色；中英並列。"""
-    us_alt = r["us"].get("alt_colors") or []
-    tw_alt = r["tw"].get("alt_colors") or []
-    if not us_alt and not tw_alt:
+    """缺色 / 316 替代建議：美國出不了貨時，列其他有貨顏色（316 先給同色 304）。資料來自 ic.color_alternatives。"""
+    alts = r.get("_alts") or []
+    if not alts:
         return
-    out_of_stock = r["us"]["set_total"] == 0 and (r["tw"].get("unconfirmable") or r["tw"]["assemblable_sets"] == 0)
-    n = len(set([a["color"] for a in us_alt] + [a["color"] for a in tw_alt]))
-
+    is_316 = r["model"].endswith("-316")
+    how_zh = {"loose": "散片湊", "split": "拆組"}
     if internal:
-        if out_of_stock:
-            st.warning(f"此顏色目前無貨；另有 {n} 種顏色有貨可向客戶提案 / "
-                       f"This finish is out of stock — {n} other finish(es) available to offer:")
-        else:
-            st.markdown(f"**其他顏色（{n} 種）/ Other finishes available ({n})**")
-        if us_alt:
-            st.markdown("　**美國現貨 / Ready to ship (US):**")
-            st.table([{"顏色 / Color": f"{a['color_name']} ({a['color']})",
-                       "可出組數 / Sets": a["total"],
-                       "倉庫 / Warehouse": ", ".join(f"{WH_NAME.get(w, w)}: {q}"
-                                                     for w, q in a["by_wh"].items())}
-                      for a in us_alt])
-        if tw_alt:
-            st.markdown("　**製程中 / In process (隔天~3天 / 1–3 days):**")
-            st.table([{"顏色 / Color": f"{a['color_name']} ({a['color']})",
-                       "可再生產組數 / Sets": a["sets"]} for a in tw_alt])
+        st.warning("316 美國無貨，可改 304 / 316 not available in US — 304 options:" if is_316 else
+                   "此顏色美國無貨，其他有貨顏色 / Not available in US — other finishes:")
+        st.table([{"顏色 / Color": ("304 同色 / same color" if a["same_color_304"] else f"{a['finish']} — {a['color']}"),
+                   "美國可出 / US": str(a["us_ship"]) + (f"（{how_zh[a['us_ship_how']]}）"
+                                                        if a["us_ship_how"] in how_zh else ""),
+                   "台灣可組 / TW": str(a["tw_sets"]),
+                   "型號 / Model": a["model"]} for a in alts])
     else:
-        if out_of_stock:
-            st.warning(f"This finish is currently unavailable. {n} other finish(es) you can offer:")
-        else:
-            st.markdown(f"**Other finishes available ({n})**")
-        if us_alt:
-            st.markdown("**Ready to ship:**")
-            st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["total"]} for a in us_alt])
-        if tw_alt:
-            st.markdown("**In process (~1–2 weeks):**")
-            st.table([{"Color": f"{a['color_name']} ({a['color']})", "Sets": a["sets"]} for a in tw_alt])
+        st.warning("Marine grade (316) unavailable — 304 options:" if is_316 else
+                   "This finish is currently unavailable — other finishes:")
+        st.table([{"Color": ("Same color, 304" if a["same_color_304"] else f"{a['finish']} — {a['color']}"),
+                   "Ready (US)": str(a["us_ship"]), "In process": str(a["tw_sets"])} for a in alts])
 
 
 def _batch_status(us_total, tw_sets, internal, tw_unconf=False):
@@ -534,6 +531,13 @@ elif go and model.strip():
                 if not r["found"]:
                     st.error(("找不到型號 / " if internal else "") + f"Model not found: {m}")
                 else:
+                    if (ic.us_ship(r)[0] == 0 and not r["tw"].get("is_accessory")
+                            and not r["tw"].get("is_shim")):
+                        try:
+                            r["_alts"] = ic.color_alternatives(m, catalog=cat, us_db=us_db,
+                                                               tw_db=tw_db, tw_sw_db=tw_sw_db)
+                        except Exception:
+                            r["_alts"] = []
                     render_single(r, internal)
     except Exception as e:
         st.error(f"Error: {type(e).__name__}: {e}")
