@@ -110,7 +110,8 @@ def family_of(model):
 #   2CADP50600G0B | K51P ( SA) 黑色 半成品x1
 # 只取「2CA料號 | 描述xN」行；跳過標題行與「支撐柱12pcs」這類組裝備註。無此格式者回空 → 行為同舊版。
 _SUB_LINE_RE = re.compile(r'^\s*(2CA\S+)\s*\|\s*(.*?)\s*$')
-_SUB_QTY_RE = re.compile(r'[xX](\d+)\s*$')
+# 用量後綴：容許空白與 ×/*（「背板黑色 x 2」「×2」都要讀成 2；漏判會靜默當 1 → 多報可組數）
+_SUB_QTY_RE = re.compile(r'\s*[xX×＊*]\s*(\d+)\s*$')
 
 
 def parse_sub_parts(spec):
