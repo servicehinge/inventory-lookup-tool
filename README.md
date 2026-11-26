@@ -1,50 +1,47 @@
-# Waterson Inventory Lookup（庫存查詢網頁）
+# Waterson Inventory Lookup（庫存查詢）
 
-輸入型號 → 整合三地庫存。Streamlit 網頁，沿用運費工具的 Streamlit Cloud 套路。
+輸入型號 → 美國能出幾組、台灣能組幾組、卡在哪。同一支引擎提供兩個入口：
+- **網頁**（Streamlit Cloud）：https://inventory-lookup-tool-nfvszxrhdk23dmjgrj4sbd.streamlit.app/
+- **JSON API**（Google Cloud Run，給 LINE bot / Grok Bot）：https://waterson-inventory-api-i3wpftru7q-uc.a.run.app
 
-## 查詢流程（引擎）
-1. **HubSpot product**：讀 `wh_configuration` 把套組拆成單片（A3 → SA.SA.SA1），每片取 `hs_sku` + `wh_erp`（ERP 料號）。
-2. **美國**（`us_inventory.py`，Sheet `1kxvd…`）：成品(套組型號) + 零散零件(單片型號) 各倉庫存（MI WLOK / CA ZOHO / CA XXU / Amazon）。
-3. **台灣 AU1**（Sheet `1UrNy8…`）：用 ERP 料號比對工廠庫存，算可組裝組數 + 安全存量示警。
+> **完整設計邏輯、業務規則、部署方式見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。** 要改程式或重新架構前先讀那份。
 
-## 身分（用「密碼」判斷，不是 email）
-進站輸 email + 密碼；**身分由密碼決定**（email 只記錄，無法提權）：
-- `STAFF_PASSWORD` → 內部版　｜　`DEALER_PASSWORD` → 經銷商版
+## 查詢流程（摘要）
+1. **HubSpot product**：讀 `wh_configuration` 把套組拆成單片（A3 → SA.SA.SA1），每片取 `wh_erp`（1CA 料號），組合件系列再讀 `specification` 拿 2CA 半成品。
+2. **美國**（`us_inventory.py`，Sheet `1kxvd…`）：現成套組＋散片各倉庫存。美國可出 = max(現成套組, 散片湊組, 拆組)。
+3. **台灣 AU1**（Drive 資料夾 `1smPY7…` 裡最新的 `庫存現量.xlsx`）：用料號算可組數（1CA → 不夠再用 2CA 補組），找出瓶頸。
+4. 美國出不了貨時，列出其他有貨顏色；316 沒貨時，同色 304 排第一。
 
-| | 內部（員工密碼） | 經銷商（經銷商密碼） |
+## 身分（由密碼決定，email 只做紀錄）
+| | 內部（`STAFF_PASSWORD`） | 經銷商（`DEALER_PASSWORD`） |
 |---|---|---|
-| 語言 | 中英並列 | 純英文（美式） |
-| 美國庫存 | 完整數字 | ✅ 完整數字（只列有貨倉 + 合計） |
-| 台灣庫存 | 單顆料號 + 可組數 + 安全存量示警 | 只給「製程中可再做 N 組，1–2 週」數量；不提台灣/不提倉別來源 |
-| 拆解/料號 | 顯示 | 不顯示 |
+| 語言 | 中英並列 | 純英文 |
+| 版面 | 摘要表（美國現成｜美國可出｜台灣可組｜卡在）＋美國怎麼出＋台灣明細 | 大數字＋結論＋簡化表 |
+| 台灣、倉別、料號 | 顯示 | 不顯示，只給數字（交期寫 1–2 週） |
 
-> 經銷商即使 email 打 @watersonusa.com，只要用經銷商密碼就只能看經銷商版 → 可安全部署成 Public。
-> 密碼放 Secrets，隨時可改；員工密碼只在公司流通，經銷商密碼等開放時才給。
+外層還有 Streamlit Cloud 的 Google 登入，只有被邀請（Invite viewers）的 email 能進。
 
 ## 本機跑
 ```bash
 cd app
 pip install -r requirements.txt
 export HUBSPOT_API_TOKEN="pat-na1-…"
-export GOOGLE_SA_KEY="/path/to/shipping-quote-486901-…json"   # 美國表+台灣表共用
-# 離線測試台灣可用快照：export TW_CSV="/tmp/waterson_full.csv"
-streamlit run app.py
+export GOOGLE_SA_KEY="/path/to/shipping-quote-486901-…json"   # 美國表＋台灣資料夾共用
+streamlit run app.py                       # 網頁
+python3 inventory_core.py "K51M-450-C4-US19"   # 只跑引擎
+uvicorn api:app --port 7860                # API（需 requirements-api.txt）
 ```
 
-## 部署到 Streamlit Cloud
-1. push 這個資料夾到 GitHub repo。
-2. share.streamlit.io → New app → 指到 repo 的 `app/app.py`。
-3. App → Settings → Secrets，貼上 `.streamlit/secrets.toml.example` 的內容（填真值）。
+## 部署
+- **網頁**：push 到 `servicehinge/inventory-lookup-tool` 的 `main` 會自動重部署。看不到新版時，用 GitHub `servicehinge` 登入 share.streamlit.io → app 的 ⋮ → **Reboot app**，再到網頁按 `Cmd + Shift + R`。Secrets 範本見 `.streamlit/secrets.toml.example`。
+- **API**：把 `api.py`、`inventory_core.py`、`us_inventory.py` 複製到 `../api-hf-space/`，在那個資料夾執行 `gcloud run deploy`（完整指令見 `ARCHITECTURE.md` §7.2，**cd 和 deploy 要寫在同一行**）。
 
-## ⚠️ 上線前待辦
-- [x] 台灣 AU1 表（`1UrNy8…`）已分享給 service account（2026-06-23）。
-- [x] GitHub repo 已建並 push：`servicehinge/inventory-lookup-tool`（2026-06-24）。
-- [ ] **Streamlit Cloud 部署（Public，靠密碼保護）**：免費版私有 app 只有 1 個名額（已被別支佔走），所以部署成 **Public**——有密碼閘門所以安全。
-      New app → repo `servicehinge/inventory-lookup-tool`、branch `main`、main file `app.py` → Advanced/Secrets 貼上本機 `.streamlit/secrets.toml`（**含 STAFF/DEALER 密碼**）→ Deploy。
-      密碼設定在 Secrets 的 `STAFF_PASSWORD` / `DEALER_PASSWORD`（實際密碼不寫在此檔，私下保管）。
-- [ ] （之後）接進現有庫存 LINE bot（PC20260610 ordernotice），共用 `inventory_core.lookup()`。
+## ⚠️ 改程式前
+`app.py`、`inventory_core.py` 的工作區混著還沒 commit 的「生管」功能。commit 要用外科手術式，只推這次的修改。流程見 `ARCHITECTURE.md` §7.4。
 
 ## 檔案
-- `inventory_core.py` — 引擎：`lookup(model)` 回三地整合 dict（含 CLI）。
-- `us_inventory.py`   — 美國表讀取（複製自 PC20260610，key 改吃環境變數）。
-- `app.py`           — Streamlit 前端（email gate + 雙身分 + i18n）。
+- `inventory_core.py` — 引擎：`lookup()`、`us_ship()`、`lookup_all_colors()`、`color_alternatives()`（含 CLI）。
+- `us_inventory.py` — 美國表讀取。
+- `app.py` — Streamlit 前端。
+- `api.py` — FastAPI（`/lookup`、`/colors`、`/healthz`），排 LINE 用文字。
+- `ARCHITECTURE.md` — 架構與設計邏輯。

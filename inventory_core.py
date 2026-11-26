@@ -6,11 +6,13 @@
   - USInventoryDB ：美國表（成品套組 + 零散零件，各倉）。
   - TWInventory   ：台灣 AU1 工廠庫存（用 ERP 料號比對，算可組裝組數）。
 
-兩種查詢：
-  - lookup(model)            單一顏色 → 三地明細。
-  - lookup_all_colors(base)  任何顏色 → 顏色 × 倉庫 可出組數矩陣（最快出貨排前面）。
+主要函式：
+  - lookup(model)              單一顏色 → 三地明細（美國現成/散片/拆組、台灣 1CA→2CA 可組數與瓶頸）。
+  - us_ship(r)                 美國實際可出 = max(現成套組, 散片湊組, 拆組)；三種共用散片，取最大不相加。
+  - lookup_all_colors(base)    任何顏色 → 每色一列（美國可出、台灣可組、瓶頸），可出多的排前面。
+  - color_alternatives(model)  美國出不了貨時的替代顏色；-316 時同色 304 排第一。
 
-教學脈絡見 ../learning/K51M-400/NOTES.md。
+設計邏輯與業務規則見 ARCHITECTURE.md；各系列教學脈絡見 ../learning/。
 """
 import os
 import csv

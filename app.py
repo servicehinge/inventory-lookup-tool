@@ -1,14 +1,16 @@
 #!/usr/bin/env python3
-"""Waterson Inventory Lookup — Streamlit 前端（簡潔、工作取向）。
+"""Waterson Inventory Lookup — Streamlit 前端（簡潔、工作取向）。設計邏輯見 ARCHITECTURE.md。
 
-身分（email 判斷）：
-  - 內部 @watersonusa.com → 中英並列，看完整三地（料號、可組數、安全存量示警）。
-  - 經銷商（其他 email）   → 純英文（美式）。美國各倉給數字；台灣不露「Taiwan/倉別」，
-                            只給 "In process" 的可再做數量 + lead time ~1–2 weeks。
+身分（由密碼決定，email 只做紀錄）：
+  - STAFF_PASSWORD  → 內部：中英並列，完整三地（料號、可組數、卡在哪）。
+  - DEALER_PASSWORD → 經銷商：純英文。只給數字；不露台灣/倉別/料號，交期寫 ~1–2 weeks。
 
-兩種查詢：
-  - 打到顏色（K51M-400-A3-US32D）→ 單色明細。
-  - 只打基礎型號（K51M-400-A3）或勾「Any color」→ 顏色 × 倉庫 可出組數表（最快出貨在前）。
+查詢：
+  - 打到顏色（K51M-450-C4-US19）→ 單色。
+  - 只打基礎型號（K51M-450-C4）或勾「Any color」→ 每色一列，美國可出最多的在前。
+  - 批次：貼整段文字，自動抓最多 10 個型號。
+內部單查與任何顏色共用同一套版面：摘要表（美國現成｜美國可出｜台灣可組｜卡在）→ 美國怎麼出 → 台灣明細（收合）。
+美國出不了貨時列其他有貨顏色；-316 沒貨時同色 304 排第一。
 """
 import os
 import json

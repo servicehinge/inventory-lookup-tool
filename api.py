@@ -3,11 +3,12 @@
 
 單一引擎：Streamlit 網頁與 LINE 共用同一份 inventory_core，邏輯永遠一致。
 - GET /healthz                         健康檢查
-- GET /lookup?model=...&key=...        查單一型號；回 {ok, found, text, data}
-  text = 已排版好的 LINE 訊息（GAS 直接送出即可）；data = 結構化結果。
-- GET /colors?model=...&key=...        任何顏色矩陣（base 型號）。
+- GET /lookup?model=...&key=...        查單一型號；回 {ok, found, text, data, alternatives}
+  text = 已排版好的訊息（版型 A 結論先行；美國出不了貨時附其他顏色 / 316→304 建議）；data = 結構化結果。
+- GET /colors?model=...&key=...        任何顏色（base 型號），每色一行美國可出｜台灣可組。
 
-授權：所有查詢需帶 ?key=<API_KEY>（環境變數），擋外部濫用。
+授權：所有查詢需帶 ?key=，等於 API_KEY（LINE）或 EXTRA_API_KEYS 其中一把（逗號分隔，給 Grok Bot 等）。
+設計邏輯見 ARCHITECTURE.md。
 DB（US / TW / TW-swing-clear）與 HubSpot catalog 以 TTL 快取在記憶體，重複查秒回。
 """
 import os
