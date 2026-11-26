@@ -115,7 +115,7 @@ def _bottleneck_label(v):
     b = v.get("bottleneck")
     if not b:
         return "-"
-    if v.get("tw_sets_1ca", 0) > 0 or not v.get("tw_sub_parts"):
+    if not any(x["erp"] == b for x in v.get("tw_sub_parts") or []):
         c = next((x for x in v.get("tw_components") or [] if x["code"] == b), None)
         return f"{b} 單片（剩 {c['qty']}）" if c else b
     s = next((x for x in v["tw_sub_parts"] if x["erp"] == b), None)
@@ -140,9 +140,8 @@ def _us_cell(v, internal=True):
 
 
 def _set_code(v):
-    """型號第三段＝套組碼（K51M-450-C4-US19 → C4）。"""
-    parts = (v.get("model") or "").split("-")
-    return parts[2] if len(parts) > 2 else "套組"
+    """套組碼（K51M-450-C4-US19 → C4；K51GG-SA-US32D → SA）。"""
+    return ic.set_code_of(v.get("model") or "") or "套組"
 
 
 def _summary_cells(v):
@@ -583,10 +582,6 @@ any_color = st.checkbox("Any color — show all finishes" + ("（任何顏色，
 go = st.button("Search / 查詢" if internal else "Search", type="primary") or bool(_qp.get("model"))
 
 
-def is_base_only(m):
-    return len(m.strip().upper().split("-")) <= 3
-
-
 if go and model.strip() and ic.is_shim_query(model):
     # Metal Door Shim：配件包裝品，直接單品查詢（不走 any-color、不需 HubSpot catalog）
     try:
@@ -601,8 +596,8 @@ if go and model.strip() and ic.is_shim_query(model):
         st.error(f"Error: {type(e).__name__}: {e}")
 elif go and model.strip():
     m = ic.normalize_model(model)  # swing clear 各種寫法（K51L-SWRH / SWLH / 空白）收斂成 K51LSWRH
-    show_colors = any_color or is_base_only(m)
-    base = "-".join(m.split("-")[:3]) if show_colors else m
+    show_colors = any_color or ic.is_base_only(m)
+    base = ic.base_of(m) if show_colors else m
     try:
         us_db, tw_db = get_dbs()
         tw_sw_db = get_tw_sw() if ic.is_swing_clear(m) else None

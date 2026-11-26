@@ -62,6 +62,59 @@ def normalize_model(model):
     return m
 
 
+def set_code_of(model):
+    """型號裡的套組／單片碼：跳過系列、純數字尺寸、顏色、鋼級，取第一個剩下的段。
+    K51M-450-C4-US19 → C4；K51GG-SA-US32D → SA；K51GG-600-B2-US32D → B2。"""
+    parts = normalize_model(model).split("-")
+    for p in parts[1:]:
+        if p.isdigit() or _PURE_COLOR.match(p) or p in ("SQ", "304", "316"):
+            continue
+        return p
+    return ""
+
+
+_COLOR_TAIL_RE = re.compile(r"^(.*?)-((?:US\d+[A-Z]?|\d{3}|WHITE|TBD)(?:-316)?)$")
+
+
+def split_color(model):
+    """型號 → (base, 顏色段)。K51M-450-C4-US19 → (K51M-450-C4, US19)；K51GG-B2-US32D-316 →
+    (K51GG-B2, US32D-316)；K51M-450-C4（沒打顏色）→ (K51M-450-C4, "")。base 必須含套組碼，
+    所以 K51M-450 不會被誤拆成 (K51M, 450)。"""
+    m = normalize_model(model)
+    mm = _COLOR_TAIL_RE.match(m)
+    if mm and set_code_of(mm.group(1)):
+        return mm.group(1), mm.group(2)
+    return m, ""
+
+
+def _has_size(m):
+    parts = normalize_model(m).split("-")
+    return len(parts) >= 2 and parts[1].isdigit()
+
+
+def base_of(model):
+    """any-color 用的 base。有尺寸的系列沿用前三段（K51M-450-C4-14R-US19 → K51M-450-C4）；
+    名稱無尺寸的系列（K51GG-B2-US32D）去掉顏色段 → K51GG-B2。"""
+    m = normalize_model(model)
+    return "-".join(m.split("-")[:3]) if _has_size(m) else split_color(m)[0]
+
+
+def is_base_only(model):
+    """使用者沒打顏色（K51M-450-C4、K51GG-B3）→ 走 any-color。"""
+    m = normalize_model(model)
+    return len(m.split("-")) <= 3 if _has_size(m) else not split_color(m)[1]
+
+
+def sku_alias(sku):
+    """HubSpot SKU → 乾淨型號別名：去 -SQ（方角預設）、去尾端 -304（預設鋼級；-316 保留）。
+    K51GG-600-SA-SQ-US32D-304 → K51GG-600-SA-US32D。讓「系列-尺寸-碼-色」的打法對得上
+    名稱不含尺寸的系列（K51GG 的 HubSpot 名稱是 K51GG-SA-US32D）。"""
+    parts = [p for p in normalize_model(sku).split("-") if p != "SQ"]
+    if parts and parts[-1] == "304":
+        parts = parts[:-1]
+    return "-".join(parts)
+
+
 def is_swing_clear(model):
     return "K51LSWRH" in normalize_model(model)
 
@@ -101,6 +154,8 @@ def extract_models(text, limit=10):
 def family_of(model):
     """型號 → 系列前綴（抓前兩段）。K51M-400-A3-US32D → K51M-400；K51LSWRH-450-A3-US32D → K51LSWRH-450。"""
     parts = normalize_model(model).split("-")
+    if len(parts) >= 2 and not parts[1].isdigit():
+        return parts[0]        # 名稱不含尺寸的系列（K51GG-B3-US19）→ 用系列前綴 K51GG 撈，單片才撈得到
     return "-".join(parts[:2]) if len(parts) >= 2 else normalize_model(model)
 
 
@@ -161,6 +216,10 @@ class HubSpotCatalog:
         self.by_sku = {}
         for term in self._search_terms(self.family):
             self._load(term)
+        # 有些系列（K51GG）HubSpot 名稱不含尺寸（K51GG-SA-US32D），用「系列-尺寸」搜只會撈到門檔。
+        # 撈不到任何非門檔 product 時，改用系列前綴再撈一次（靠 sku_alias 對回「系列-尺寸-…」）。
+        if "-" in self.family and not any(not is_wp(p.get("hs_sku") or "") for p in self.by_sku.values()):
+            self._load(self.family.split("-")[0])
 
     def _search_terms(self, family):
         """swing clear 的 product 名稱在 HubSpot 同時有 K51LSWRH-… 與 K51L-SWRH-… 兩種寫法，
@@ -200,6 +259,8 @@ class HubSpotCatalog:
                         alias = wp_alias(sk)
                         if alias:
                             self.by_name.setdefault(alias, p)
+                    elif p.get("name"):  # SKU 乾淨別名（K51GG-600-SA-US32D）；真名稱優先，不覆蓋
+                        self.by_name.setdefault(sku_alias(sk), p)
             after = resp.get("paging", {}).get("next", {}).get("after")
             if not after:
                 break
@@ -226,8 +287,7 @@ class HubSpotCatalog:
         counts = Counter(c.strip() for c in config.split(".") if c.strip())
         # 用正規化型號定位功能碼（swing clear 多一段 SWRH，正規化後黏成單 token → parts[2] 仍是功能碼）
         nname = normalize_model(set_name)
-        parts = nname.split("-")
-        func = parts[2] if len(parts) > 2 else ""
+        func = set_code_of(nname)   # K51M-450-C4-US19 → C4；K51GG-B3-US19（名稱無尺寸）→ B3
         for code, cnt in counts.items():
             comp_model = nname.replace(f"-{func}-", f"-{code}-", 1) if func else nname
             cp = self._find(comp_model)
@@ -578,7 +638,8 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
                     "components": comp_us, "alt_colors": []}
     # 美國優先『拆組出貨』：完整套組美國無現貨時，看能否用「較小現成套組＋散片」在美國湊出整組。
     result["us"]["decomposed"] = (
-        _us_decompose(model, result["decomposition"], catalog, us_db)
+        _us_decompose(model if len(model.split("-")) >= 4 or not set_sku else sku_alias(set_sku),
+                      result["decomposition"], catalog, us_db)   # 名稱無尺寸（K51GG-B3-US19）→ 用 SKU 別名
         if result["us"]["set_total"] <= 0 else None)
     # 全用美國散片能湊幾組（每片 total÷每組需，取最小；有片缺貨＝0）
     result["us"]["loose_sets"] = _us_loose_sets(result["decomposition"], comp_us)
@@ -692,8 +753,9 @@ def lookup(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
         return result
 
     total_sets = sets_1ca + sets_from_sub
-    # bottleneck：能靠 1CA 配套時報最緊的單片；否則（全靠 2CA）報最緊的半成品
-    if sets_1ca > 0 or not sub_parts:
+    # bottleneck：有用到 2CA 補組（或完全沒 1CA）時，再多組就是卡在最緊的半成品
+    # （1CA 成品已全部用完）；只有 1CA 能組、2CA 補不出任何一組時，才報最緊的單片。
+    if not sub_parts or (sets_from_sub == 0 and sets_1ca > 0):
         bottleneck = (min(tw_comps, key=lambda x: x["qty"] // x["need"] if x["need"] else 0)["code"]
                       if tw_comps else None)
     else:
@@ -773,7 +835,7 @@ def color_alternatives(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=Non
     回 [{finish, color, model, us_ship, us_ship_how, tw_sets, same_color_304}]，只含有貨者；
     同色 304 排最前，其餘依美國可出、台灣可組排序。"""
     m = normalize_model(model)
-    base = "-".join(m.split("-")[:3])
+    base = base_of(m)
     is_316 = m.endswith("-316")
     color = finish_color(m)
     grid = lookup_all_colors(base, catalog=catalog, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)

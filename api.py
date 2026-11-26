@@ -87,9 +87,9 @@ def _us_reason(r):
         comps = {c["code"]: c["total"] for c in us.get("components") or []}
         short = "、".join(d["code"] for d in r["decomposition"] if comps.get(d["code"], 0) < d["count"])
         have = "、".join(f"{d['code']} 散片 {comps[d['code']]}" for d in r["decomposition"] if comps.get(d["code"], 0) > 0)
-        code = r["model"].split("-")[2] if len(r["model"].split("-")) > 2 else "套組"
+        code = ic.set_code_of(r["model"]) or "套組"
         return ["美國 US：0 組/sets（現成 " + code + " 套組 0 / no ready " + code + " set）"] + ([f"  缺/short {short}" + (f"（{have}）" if have else "")] if short else [])
-    code = r["model"].split("-")[2] if len(r["model"].split("-")) > 2 else "套組"
+    code = ic.set_code_of(r["model"]) or "套組"
     out = [f"美國 US：{ship} 組/sets（{_HOW[how]}）",
            f"  現成 {code} 套組 0 / no ready {code} set"]
     if how == "split":
@@ -104,7 +104,7 @@ def _us_reason(r):
 def _tw_reason(r):
     """台灣卡在哪：成品單片路徑報單片，半成品路徑報那個 2CA 料（單一片在用就叫「SA 半成品」）。"""
     tw = r["tw"]
-    if tw.get("sets_1ca", 0) > 0 or not tw.get("sub_parts"):
+    if not any(x["erp"] == tw.get("bottleneck") for x in tw.get("sub_parts") or []):
         b = next((c for c in tw.get("components") or [] if c["code"] == tw.get("bottleneck")), None)
         if not b:
             return []
@@ -116,8 +116,12 @@ def _tw_reason(r):
         users = [u["code"] for u in s.get("used_by") or []]
         name = f"{users[0]} 半成品/semi-finished" if len(users) == 1 else (s["desc"] or s["erp"])
         qty, need = s["qty"], s["per_set"]
-    return [f"  卡在/bottleneck：{name}",
-            f"  剩 {qty}，每組需 {need} / {qty} left, {need} per set"]
+    out = [f"  卡在/bottleneck：{name}",
+           f"  剩 {qty}，每組需 {need} / {qty} left, {need} per set"]
+    if tw.get("sets_1ca", 0) > 0 and tw.get("sets_from_sub", 0) > 0:
+        out.append(f"  （含成品單片可組 {tw['sets_1ca']} 組＋半成品補 {tw['sets_from_sub']} 組 / "
+                   f"{tw['sets_1ca']} from finished pieces + {tw['sets_from_sub']} from semi-finished）")
+    return out
 
 
 _HOW = {"ready": "現成/ready", "loose": "散片湊/loose", "split": "拆組/split-fill"}
