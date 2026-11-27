@@ -130,11 +130,12 @@ _HOW = {"ready": "現成/ready", "loose": "散片湊/loose", "split": "拆組/sp
 def _alt_lines(r, alts, limit=4):
     """版型 A 的替代建議：316 先給同色 304，其餘列有貨顏色（美國可出｜台灣可組）。"""
     m = r["model"]
-    head = ("⚠ 316 美國無貨，可改 304 / 316 not in US — 304 options:" if m.endswith("-316")
+    head = ("⚠ 316 美國無貨，其他 316 顏色或改 304 / 316 not in US — other 316 or 304 options:" if m.endswith("-316")
             else "⚠ 此色美國無貨，其他顏色 / not in US — other finishes:")
     out = [head]
     for a in alts[:limit]:
-        tag = "304 同色/same color" if a["same_color_304"] else f"{a['finish']}（{a['color']}）"
+        tag = ("304 同色/same color" if a["same_color_304"]
+               else f"{a['finish']}（{a['color']}）")   # 316 時 color 已帶「316／304」
         us = f"美國 US {a['us_ship']} 組" + (f"（{_HOW[a['us_ship_how']]}）"
                                             if a["us_ship_how"] and a["us_ship_how"] != "ready" else "")
         out.append(f"  {tag}：{us}｜台灣 TW {a['tw_sets']} 組")
@@ -214,8 +215,9 @@ def lookup(model: str, key: str = "", role: str = "internal"):
 @app.get("/colors")
 def colors(model: str, key: str = "", role: str = "internal"):
     _check(key)
-    base = ic.normalize_model(model)
+    base = ic.base_of(model)
     us, tw, tw_sw = _get_dbs()
     cat = _get_catalog(ic.family_of(base))
-    data = ic.lookup_all_colors(base, catalog=cat, us_db=us, tw_db=tw, tw_sw_db=tw_sw)
+    data = ic.lookup_all_colors(base, catalog=cat, us_db=us, tw_db=tw, tw_sw_db=tw_sw,
+                                include_316=ic.wants_316(model))   # -316 → 316 與 304 各色一起列
     return JSONResponse({"ok": True, "found": data["found"], "text": fmt_grid(data), "data": data})

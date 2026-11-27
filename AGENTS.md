@@ -64,9 +64,10 @@ The program is **read-only**. It never writes to HubSpot, the US sheet, or the T
 - Tab **`2026 ZOHO`**: column A = warehouse (`MI WLOK`, `CA ZOHO`, `NV ZOHO`), column B =
   SKU (only on the first row of each block; may contain aliases separated by newline or `=`).
   Quantity = the column whose header (first 6 rows) contains `TOTAL` or `Please see here`.
-- Tab **`2026 XXU加州`** (CA XXU): column A = SKU, quantity = last number in the row.
-  *This tab currently does not exist in the sheet; the code skips it silently.*
-- Tab **`墊片庫存`**: Metal Door Shim, counted in packs of 10; column 2 = CA, column 3 = XXU.
+- Tab **`墊片庫存`**: Metal Door Shim, counted in packs of 10; column C = CA ZOHO. The
+  `剩餘數量` (remaining) row wins if present.
+- **No other tab is read** (owner decision, 2026-11-27). Rows whose warehouse contains
+  `Amazon` are skipped. Amazon stock is for manual reference only, not counted as shippable.
 - The sheet has both **ready set rows** and **loose piece rows** (e.g. `K51M-450-DS-US19`).
 
 ### 3. Taiwan AU1 inventory: Google Drive folder `1smPY7HOXIa7Z0XgpgwTANqwN5AkKkVgE`
@@ -170,7 +171,9 @@ curl "http://localhost:7860/lookup?model=K51M-450-C4-US19&key=test"
 2. **Any piece without a part number makes the whole set "cannot confirm"** (`None`), unless
    it has a 2CA route. Never report a number from the pieces that are in stock, because
    that oversells.
-3. **Taiwan sets = finished-piece sets + semi-finished top-up.** 1CA sets =
+3. **Taiwan sets = finished-piece sets + semi-finished top-up.** On-hand quantity is used as is;
+   **safety stock is NOT subtracted**. Sets made from semi-finished parts have the **same
+   lead time** as finished pieces. 1CA sets =
    min(piece qty ÷ pieces per set). Remaining demand is filled from 2CA parts.
    **Shared 2CA parts** (e.g. a backplate used by both SA and SA1) are summed per whole set
    before dividing, so they're not double-counted.
@@ -185,7 +188,10 @@ curl "http://localhost:7860/lookup?model=K51M-450-C4-US19&key=test"
    11 (C3 set + DS loose)".
 8. **US first.** Show both the US and Taiwan numbers; sales decides.
 9. **Alternatives** appear only when US can ship 0. They list other pure colors (square
-   corner, 304) that have US or Taiwan stock. For `-316`, the same color in 304 comes first.
+   corner) that have US or Taiwan stock. For `-316`: same color in 304 first, then other
+   316 colors, then other 304 colors.
+9b. **"Any color" follows the grade asked for.** 304 (no suffix) → only 304 colors.
+   316 (`-316`, e.g. `K51M-450-C4-316`) → 316 and 304 colors together, 316 rows first.
 10. **Defaults**: no steel grade means 304; square corner (`SQ`) is the default. Round
     corners (`14R`/`58R`), `316`, `TBD` and `…orUS19` variants are excluded from "any color".
 11. **Swing Clear**: every spelling becomes `K51LSWRH`; LH is looked up as RH (only RH is
@@ -210,6 +216,7 @@ curl "http://localhost:7860/lookup?model=K51M-450-C4-US19&key=test"
 | `K51M-450-C4-US19` | Ready C4 = 0 but can ship via C3 set + DS loose; single and any-color views agree |
 | `K51P-500-A3-US19` | 1CA = 0, uses 2CA; backplate 6 per set; bottleneck "SA semi-finished"; other colors suggested |
 | `K51M-450-C4-US32D-316` | 304 same-color suggestion listed first |
+| `K51M-450-C4-316` (any color) | 316 colors first, then 304 colors, each labeled 316 / 304 |
 | `K51GG-600-SA-US32D` (also `K51GG-SA-US32D`, full SKU) | Found; TW = 8 finished + 11 semi-finished; bottleneck "SA semi-finished" |
 | `K51GG-B3` | Sizeless set splits into DS/HS/SA; any-color table renders |
 | `K51LSWRH-450-A3-US32D` | Swing Clear branch works |

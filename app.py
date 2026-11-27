@@ -46,9 +46,8 @@ _boot_secrets()
 import inventory_core as ic
 from us_inventory import USInventoryDB
 
-WH_NAME = {"MI WLOK": "Michigan", "CA ZOHO": "California (ZOHO)",
-           "CA XXU": "California (XXU)", "Amazon USA": "Amazon"}
-WH_ORDER = ["MI WLOK", "CA ZOHO", "CA XXU", "Amazon USA"]
+WH_NAME = {"MI WLOK": "Michigan", "CA ZOHO": "California (ZOHO)", "NV ZOHO": "Nevada (ZOHO)"}
+WH_ORDER = ["MI WLOK", "CA ZOHO", "NV ZOHO"]
 
 
 @st.cache_resource(ttl=1800)
@@ -438,15 +437,16 @@ def render_alts(r, internal):
     is_316 = r["model"].endswith("-316")
     how_zh = {"loose": "散片湊", "split": "拆組"}
     if internal:
-        st.warning("316 美國無貨，可改 304 / 316 not available in US — 304 options:" if is_316 else
+        st.warning("316 美國無貨，其他 316 顏色或改 304 / 316 not available in US — other 316 or 304 options:" if is_316 else
                    "此顏色美國無貨，其他有貨顏色 / Not available in US — other finishes:")
-        st.table([{"顏色 / Color": ("304 同色 / same color" if a["same_color_304"] else f"{a['finish']} — {a['color']}"),
+        st.table([{"顏色 / Color": ("304 同色 / same color" if a["same_color_304"]
+                                  else f"{a['finish']} — {a['color']}"),
                    "美國可出 / US": str(a["us_ship"]) + (f"（{how_zh[a['us_ship_how']]}）"
                                                         if a["us_ship_how"] in how_zh else ""),
                    "台灣可組 / TW": str(a["tw_sets"]),
                    "型號 / Model": a["model"]} for a in alts])
     else:
-        st.warning("Marine grade (316) unavailable — 304 options:" if is_316 else
+        st.warning("Marine grade (316) unavailable — other 316 or 304 options:" if is_316 else
                    "This finish is currently unavailable — other finishes:")
         st.table([{"Color": ("Same color, 304" if a["same_color_304"] else f"{a['finish']} — {a['color']}"),
                    "Ready (US)": str(a["us_ship"]), "In process": str(a["tw_sets"])} for a in alts])
@@ -462,7 +462,7 @@ def _batch_status(us_total, tw_sets, internal, tw_unconf=False):
     return "無貨" if internal else "unavailable"
 
 
-WH_SHORT = {"MI WLOK": "MI W-Lock", "CA ZOHO": "CA ZOHO", "CA XXU": "CA XXU", "Amazon USA": "Amazon"}
+WH_SHORT = {"MI WLOK": "MI W-Lock", "CA ZOHO": "CA ZOHO", "NV ZOHO": "NV ZOHO"}
 
 
 def wh_short(w):
@@ -604,7 +604,8 @@ elif go and model.strip():
         cat = get_catalog(ic.family_of(m))
         with st.spinner("Looking up…"):
             if show_colors:
-                data = ic.lookup_all_colors(base, catalog=cat, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
+                data = ic.lookup_all_colors(base, catalog=cat, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db,
+                                            include_316=ic.wants_316(m))   # -316 → 316 與 304 各色
                 if not data["found"]:
                     st.error(f"No variants found for {base}")
                 else:

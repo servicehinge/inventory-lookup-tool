@@ -3,9 +3,8 @@
 複製自 PC20260610TrelloOrderVerification/inventory_lookup.py，改成 key/creds 可由環境/呼叫端注入，
 以便 Streamlit Cloud 部署（service account JSON 走 st.secrets）。
 
-兩分頁結構不同：
-  - 2026 ZOHO   ：多倉（A欄倉庫、B欄SKU 只在首列），現量 = 標題含 TOTAL/「Please see here」那一欄（動態定位）。
-  - 2026 XXU加州：單一倉(CA XXU)，A欄=SKU，現量 = 該列最後一個數字（流水餘額）。
+只讀「2026 ZOHO」分頁：多倉（A欄倉庫、B欄SKU 只在首列），現量 = 標題含 TOTAL/「Please see here」那一欄（動態定位）。
+其他分頁一律不讀（使用者 2026-11-27 確認）；Amazon 倉只供人工參考，不計入可出貨庫存。
 SKU 常含別名（如「K51P-A2-US32D (SA.SA1)* = K51P-500-A2-US32D」），全部別名都拿來比。
 """
 import os
@@ -16,8 +15,8 @@ from google.oauth2.service_account import Credentials
 SHEET_ID = os.environ.get("US_SHEET_ID", "1kxvd-e9oafYHjRs9i_Qqvr6Liq9FdwNJag3WEWqZzzU")
 DEFAULT_KEY = "/Users/weichuchen/Desktop/03Project/PC202602 ask for shipping quote/shipping-quote-486901-dbd435d38327.json"
 SCOPES = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-TABS = ["2026 ZOHO", "2026 XXU加州"]
-SHIM_TAB = "墊片庫存"  # Metal Door Shim 流水帳（美國以「包」計，10pcs/包）；欄 2=CA 3=XXU
+TABS = ["2026 ZOHO"]
+SHIM_TAB = "墊片庫存"  # Metal Door Shim 流水帳（美國以「包」計，10pcs/包）；欄 2=CA ZOHO
 
 
 def norm(s):
@@ -35,13 +34,6 @@ def core(n):
 def finish_of(raw):
     m = re.search(r'US\d+[A-Z]?(?![A-Za-z0-9])', (raw or '').upper())
     return m.group(0) if m else ''
-
-
-def is_num(c):
-    try:
-        float(str(c).replace(',', '').strip()); return True
-    except Exception:
-        return False
 
 
 def to_int(c):
@@ -77,26 +69,20 @@ def parse_tab(ws):
     tcol = find_total_col(rows)
     header0 = (rows[0][0] if rows[0] else '').strip().upper()
     entries = []
-    if tcol is not None and header0.startswith('WAREHOUSE'):
-        cur, cur_raw = [], ''
-        for r in rows[1:]:
-            wh = (r[0] if len(r) > 0 else '').strip()
-            item = (r[1] if len(r) > 1 else '').strip()
-            if item:
-                cur, cur_raw = sku_aliases(item), item
-            if not cur:
-                continue
-            qty = (r[tcol] if len(r) > tcol else '').strip()
-            entries.append((cur, cur_raw, wh, qty))
-    else:
-        wh = "CA XXU" if "XXU" in ws.title else ws.title
-        for r in rows[1:]:
-            item = (r[0] if len(r) > 0 else '').strip()
-            if not item:
-                continue
-            nums = [c for c in r[1:] if is_num(c)]
-            qty = nums[-1] if nums else ''
-            entries.append((sku_aliases(item), item, wh, qty))
+    if tcol is None or not header0.startswith('WAREHOUSE'):
+        return entries
+    cur, cur_raw = [], ''
+    for r in rows[1:]:
+        wh = (r[0] if len(r) > 0 else '').strip()
+        item = (r[1] if len(r) > 1 else '').strip()
+        if item:
+            cur, cur_raw = sku_aliases(item), item
+        if not cur:
+            continue
+        if 'AMAZON' in wh.upper():
+            continue   # Amazon 庫存只供人工查詢參考，不算美國可出
+        qty = (r[tcol] if len(r) > tcol else '').strip()
+        entries.append((cur, cur_raw, wh, qty))
     return entries
 
 
@@ -136,22 +122,18 @@ def _classify(entries, model):
 
 
 def parse_shim_tab(ws):
-    """墊片庫存流水帳 → {'CA ZOHO': 包, 'CA XXU': 包}。優先取底部「剩餘數量」列；
+    """墊片庫存流水帳 → {'CA ZOHO': 包}。優先取底部「剩餘數量」列；
     否則加總各列 +/- 交易（兩者一致，剩餘列＝進出加總）。單位＝包（10pcs/包）。"""
     rows = ws.get_all_values()
-    ca = xxu = 0
-    remain = None
+    ca, remain = 0, None
     for r in rows:
         c0 = (r[0] if len(r) > 0 else "").strip()
         cca = r[2] if len(r) > 2 else ""
-        cxxu = r[3] if len(r) > 3 else ""
         if c0 == "剩餘數量":
-            remain = (to_int(cca), to_int(cxxu))
+            remain = to_int(cca)
             continue
         ca += to_int(cca)
-        xxu += to_int(cxxu)
-    ca, xxu = remain if remain else (ca, xxu)
-    return {"CA ZOHO": ca, "CA XXU": xxu}
+    return {"CA ZOHO": remain if remain is not None else ca}
 
 
 def _make_creds():

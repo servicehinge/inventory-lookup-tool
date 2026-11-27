@@ -1,4 +1,4 @@
-# 09 — Inventory Check: what it does and how to use it
+# 09 — Inventory Lookup: what it does and how to use it
 
 *For non-technical readers. Developers: see `AGENTS.md`.*
 
@@ -27,7 +27,7 @@ The tool reads three sources. It **only reads** them and never changes anything.
 | Source | What it tells us |
 |---|---|
 | **HubSpot products** | Which pieces make up each set, and each piece's Taiwan part number |
-| **US inventory Google Sheet** ("2026 ZOHO" tab) | Stock in MI W-Lock, CA ZOHO, NV ZOHO: complete sets and loose pieces |
+| **US inventory Google Sheet** ("2026 ZOHO" tab only; shims from "墊片庫存") | Stock in MI W-Lock, CA ZOHO, NV ZOHO: complete sets and loose pieces. Amazon stock is **not** counted (check it by hand if needed); no other tab is read |
 | **Taiwan daily stock file** (`庫存現量.xlsx`, uploaded by the factory to a Google Drive folder every day) | Stock of every Taiwan part number. The tool always uses the newest file |
 
 If the Taiwan file can't be read, the tool shows an error instead of using old numbers.
@@ -46,9 +46,12 @@ If the Taiwan file can't be read, the tool shows an error instead of using old n
    are 11 ready C4 sets when the 11 are actually built from C3 + DS.
 5. **Taiwan** counts finished pieces first, then makes up extra sets from semi-finished parts.
    A part shared by several pieces (such as a backplate) is counted once for the whole set.
+   Safety stock is **not** subtracted, and sets made from semi-finished parts have the same
+   lead time (next day to ~3 days).
 6. **US first**: both the US and Taiwan numbers are shown, and sales decides.
 7. **No-color searches** (e.g. `K51M-450-C4`) list every standard color (square corner, 304),
-   with the color that can ship the most first.
+   with the color that can ship the most first. For **316**, search `K51M-450-C4-316` (or tick
+   Any color on a 316 model): it lists 316 colors first, then 304 colors.
 8. **Dealers** see English only, with no Taiwan, warehouse names, or part numbers. Their
    lead time is shown as "approx. 1–2 weeks".
 

@@ -4,7 +4,7 @@
 - **網頁**（Streamlit Cloud）：https://inventory-lookup-tool-nfvszxrhdk23dmjgrj4sbd.streamlit.app/
 - **JSON API**（Google Cloud Run，給 LINE bot / Grok Bot）：https://waterson-inventory-api-i3wpftru7q-uc.a.run.app
 
-> **AI／開發者交辦：[`AGENTS.md`](AGENTS.md)（英文）；給非技術同仁：[`09_inventory_reconciliation.md`](09_inventory_reconciliation.md)（英文）。完整設計邏輯、業務規則、部署方式見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。** 要改程式或重新架構前先讀那份。
+> **AI／開發者交辦：[`AGENTS.md`](AGENTS.md)（英文）；給非技術同仁：[`09_inventory_lookup.md`](09_inventory_lookup.md)（英文）。完整設計邏輯、業務規則、部署方式見 [`ARCHITECTURE.md`](ARCHITECTURE.md)。** 要改程式或重新架構前先讀那份。
 
 ## 查詢流程（摘要）
 1. **HubSpot product**：讀 `wh_configuration` 把套組拆成單片（A3 → SA.SA.SA1），每片取 `wh_erp`（1CA 料號），組合件系列再讀 `specification` 拿 2CA 半成品。

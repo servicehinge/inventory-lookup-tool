@@ -96,12 +96,21 @@ def base_of(model):
     """any-color 用的 base。有尺寸的系列沿用前三段（K51M-450-C4-14R-US19 → K51M-450-C4）；
     名稱無尺寸的系列（K51GG-B2-US32D）去掉顏色段 → K51GG-B2。"""
     m = normalize_model(model)
+    if m.endswith("-316"):
+        m = m[:-4]
     return "-".join(m.split("-")[:3]) if _has_size(m) else split_color(m)[0]
 
 
+def wants_316(model):
+    """型號尾端 -316（客戶要 316 海洋級）。"""
+    return normalize_model(model).endswith("-316")
+
+
 def is_base_only(model):
-    """使用者沒打顏色（K51M-450-C4、K51GG-B3）→ 走 any-color。"""
+    """使用者沒打顏色（K51M-450-C4、K51GG-B3、K51M-450-C4-316）→ 走 any-color。"""
     m = normalize_model(model)
+    if m.endswith("-316"):
+        m = m[:-4]
     return len(m.split("-")) <= 3 if _has_size(m) else not split_color(m)[1]
 
 
@@ -297,9 +306,10 @@ class HubSpotCatalog:
                                       "sub_parts": parse_sub_parts(cp.get("specification") if cp else None)})
         return out
 
-    def list_variants(self, base, colors_only=True):
+    def list_variants(self, base, colors_only=True, include_316=False):
         """base 如 K51M-400-A3 → 該套組變體。colors_only=True 只留純顏色（方角 SQ + 304），
-        排除圓角(14R/58R)與 316 海洋級——客戶不挑色時的預設。"""
+        排除圓角(14R/58R)與 316 海洋級——客戶不挑色時的預設。
+        include_316=True（客戶要 316）→ 另外加入各色 316（finish 如 US32D-316）。"""
         base = base.strip().upper()
         seen, out = set(), []
         for name, p in self.by_name.items():
@@ -310,12 +320,18 @@ class HubSpotCatalog:
             if "." not in (p.get("wh_configuration") or ""):
                 continue  # 只要套組
             finish = name[len(base) + 1:]
-            if colors_only and not _PURE_COLOR.match(finish):
+            is316 = finish.endswith("-316")
+            color = finish[:-4] if is316 else finish
+            if colors_only and not _PURE_COLOR.match(color):
+                continue
+            if is316 and not include_316:
                 continue
             if finish in seen:
                 continue
             seen.add(finish)
-            out.append({"finish": finish, "model": name, "color": COLOR_NAMES.get(finish, finish)})
+            cname = COLOR_NAMES.get(color, color)
+            out.append({"finish": finish, "model": name, "grade": "316" if is316 else "304",
+                        "color": cname + (" 316" if is316 else " 304" if include_316 else "")})
         return out
 
 
@@ -784,7 +800,8 @@ def us_ship(r):
     return (n, how) if n > 0 else (0, None)
 
 
-def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None):
+def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None, include_316=False):
+    """任何顏色。include_316=True（客戶要 316）→ 316 與 304 各色一起列，316 排前面。"""
     base = normalize_model(base)
     catalog = catalog or HubSpotCatalog(family_of(base))
     us_db = us_db or USInventoryDB()
@@ -792,7 +809,7 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
         tw_sw_db = tw_sw_db or TWSwingClear()
     else:
         tw_db = tw_db or TWInventory()
-    variants = catalog.list_variants(base)
+    variants = catalog.list_variants(base, include_316=include_316)
     rows = []
     for v in variants:
         r = lookup(v["model"], catalog=catalog, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
@@ -802,6 +819,7 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
         ship, how = us_ship(r)
         rows.append({
             "finish": v["finish"], "color": v.get("color", v["finish"]), "model": v["model"],
+            "grade": v.get("grade", "304"),
             "us_by_wh": us_by_wh, "us_total": r["us"]["set_total"],
             "us_ship": ship, "us_ship_how": how,
             "us_loose_sets": r["us"].get("loose_sets") or 0,
@@ -819,8 +837,9 @@ def lookup_all_colors(base, catalog=None, us_db=None, tw_db=None, tw_sw_db=None)
             "decomposition": r["decomposition"],
         })
     # 排序：美國可出（含散片/拆組）多的在前，其次台灣可組多的（無法確認的 in_process=None 視為 -1 排最後）
-    rows.sort(key=lambda x: (x["us_ship"], x["in_process"] if x["in_process"] is not None else -1),
-              reverse=True)
+    rows.sort(key=lambda x: (x["grade"] == "316", x["us_ship"],
+                             x["in_process"] if x["in_process"] is not None else -1),
+              reverse=True)   # 316 先（只有 include_316 才會有），各組內美國可出多的在前
     # 有貨的倉（任一顏色 >0）才當欄位
     whs = set()
     for r in rows:
@@ -838,7 +857,8 @@ def color_alternatives(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=Non
     base = base_of(m)
     is_316 = m.endswith("-316")
     color = finish_color(m)
-    grid = lookup_all_colors(base, catalog=catalog, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db)
+    grid = lookup_all_colors(base, catalog=catalog, us_db=us_db, tw_db=tw_db, tw_sw_db=tw_sw_db,
+                             include_316=is_316)   # 316：316 與 304 各色都看
     out = []
     for r in grid["rows"]:
         if normalize_model(r["model"]) == m:
@@ -847,9 +867,12 @@ def color_alternatives(model, catalog=None, us_db=None, tw_db=None, tw_sw_db=Non
         if r["us_ship"] <= 0 and tw_sets <= 0:
             continue
         out.append({"finish": r["finish"], "color": r["color"], "model": r["model"],
+                    "grade": r.get("grade", "304"),
                     "us_ship": r["us_ship"], "us_ship_how": r["us_ship_how"], "tw_sets": tw_sets,
                     "same_color_304": bool(is_316 and r["finish"] == color)})
-    out.sort(key=lambda a: (a["same_color_304"], a["us_ship"], a["tw_sets"]), reverse=True)
+    # 316：同色 304 第一，其次其他顏色 316，再來其他顏色 304；各組內美國可出多的在前
+    out.sort(key=lambda a: (a["same_color_304"], a["grade"] == "316", a["us_ship"], a["tw_sets"]),
+             reverse=True)
     return out
 
 
@@ -859,5 +882,6 @@ if __name__ == "__main__":
     ap.add_argument("--model", required=True)
     ap.add_argument("--all-colors", action="store_true")
     a = ap.parse_args()
-    out = lookup_all_colors(a.model) if a.all_colors else lookup(a.model)
+    out = (lookup_all_colors(base_of(a.model), include_316=wants_316(a.model)) if a.all_colors
+           else lookup(a.model))
     print(json.dumps(out, ensure_ascii=False, indent=2))
